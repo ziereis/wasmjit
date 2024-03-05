@@ -9,6 +9,7 @@
 #include <asmjit/asmjit.h>
 #include <cassert>
 #include <cstddef>
+#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
 #include <span>
@@ -19,6 +20,7 @@
 #include <unistd.h>
 #include <vector>
 #include "tzUtils.hpp"
+#include <variant>
 
 using namespace asmjit;
 using u64 = uint64_t;
@@ -279,9 +281,9 @@ public:
     std::cout << ") -> " << asStr(returnType) << std::endl;
   }
 
-private:
   std::span<ValueType> paramTypes;
   ValueType returnType;
+private:
 };
 
 class TypeSection : NonCopyable, NonMoveable {
@@ -437,10 +439,11 @@ private:
   std::span<ImportedName> importedNames;
 };
 
+
 class WasmModule : NonCopyable, NonMoveable {
 public:
   WasmModule() {
-    code.init(runtime.environment());
+    code.init(runtime.environment(), runtime.cpuFeatures());
     code.setLogger(&logger);
   }
 
@@ -455,20 +458,68 @@ public:
     }
   }
 
-  FuncSignature genSignature(FunctionPrototype &signature) {
-
-
+  static TypeId WasmTtoJitT(ValueType type) {
+    switch (type) {
+    case ValueType::I32:
+      return TypeId::kInt32;
+    case ValueType::I64:
+      return TypeId::kInt64;
+    case ValueType::F32:
+      return TypeId::kInt32;
+    case ValueType::F64:
+      return TypeId::kInt64;
+    case ValueType::NONE:
+      return TypeId::kVoid;
+    default:
+      throw std::runtime_error("Invalid type");
+    }
   }
 
+  FuncSignature genSignature(FunctionPrototype &inSig) {
+    FuncSignature sig;
+    sig.setRet(WasmTtoJitT(inSig.returnType));
+    for (auto type : inSig.paramTypes) {
+      sig.addArg(WasmTtoJitT(type));
+    }
+    return sig;
+  }
+
+  x86::Gp getReg(x86::Compiler& cc, ValueType type) {
+    switch (type) {
+    case ValueType::I32:
+      return cc.newInt32();
+    case ValueType::I64:
+      return cc.newInt64();
+    case ValueType::F32:
+      return cc.newInt32();
+    case ValueType::F64:
+      return cc.newInt64();
+    case ValueType::NONE:
+      throw std::runtime_error("Invalid type");
+    }
+  }
+
+
+
   void *genCode(ArenaAllocator &alloc, BinaryReader &reader) {
+    x86::Compiler cc(&code);
     u32 numFuncs = reader.readIntLeb<u32>();
     std::cout << "numFuncs: " << std::to_string(numFuncs) << std::endl;
     std::vector<ValueType> localTypes;
+    std::vector<x86::Gp> localsRegMap;
+    std::vector<x86::Gp> ccStack;
 
     for (u32 i = 0; i < numFuncs; i++) {
+      localTypes.clear();
+      localsRegMap.clear();
+
       auto typeIdx = fnDeclarationSection.functions[i];
       auto& signature = typeSection.types[typeIdx];
       signature.dump();
+
+      auto ccSig = genSignature(signature);
+      auto funcNode = cc.addFunc(ccSig);
+      funcNode->frame().setPreservedFP();
 
       std::cout << "Function: " << std::to_string(i) << std::endl;
       u32 fnSize = reader.readIntLeb<u32>();
@@ -476,6 +527,61 @@ public:
       readCompressedLocals(reader, localTypes);
       std::cout << "localTypes: " << std::to_string(localTypes.size())
                 << std::endl;
+      localsRegMap.reserve(localTypes.size() + ccSig.argCount());
+      for (u32 i = 0; i < ccSig.argCount(); i++) {
+        localsRegMap.emplace_back(getReg(cc, signature.paramTypes[i]));
+        funcNode->setArg(i, localsRegMap[i]);
+      }
+      for (u32 i = 0; i < localTypes.size(); i++) {
+        localsRegMap.emplace_back(getReg(cc, localTypes[i]));
+      }
+
+
+      while(true) {
+        WasmOpcode op = static_cast<WasmOpcode>(reader.read<u8>());
+
+        switch (op) {
+          case WasmOpcode::END: {
+            assert(ccStack.size() <= 1);
+            if (ccStack.empty()) {
+              cc.ret();
+            } else {
+              cc.ret(ccStack.back());
+            }
+              cc.endFunc();
+              goto end;
+
+          }
+          case WasmOpcode::LOCAL_GET: {
+            auto localIdx = reader.readIntLeb<u32>();
+            ccStack.push_back(localsRegMap[localIdx]);
+            break;
+          }
+          case WasmOpcode::I32_ADD: {
+            x86::Gp op1 = ccStack.back();
+            ccStack.pop_back();
+            cc.add(ccStack.back(), op1);
+          }
+          default:
+            std::runtime_error{"not implemented!"};
+        }
+      }
+    end:
+      cc.finalize();
+      printf("logger: %s\n", logger.data());
+      typedef int (*AddFunc)(int, int);
+      AddFunc addFunc;
+      Error err = runtime.add(&addFunc, &code);
+        if (err) {
+          printf("Error: %s\n", DebugUtils::errorAsString(err));
+          exit(1);
+        }
+
+        int result = addFunc(40, 2);
+
+        printf("result: %d\n", result);
+
+
     }
     return nullptr;
   }
@@ -553,43 +659,46 @@ int main() {
   WasmModule module;
   module.compile({wasm_file.data(), wasm_file.size()});
 
-  JitRuntime rt;
+  // JitRuntime rt;
 
-  StringLogger logger;
-  CodeHolder code;
+  // StringLogger logger;
+  // CodeHolder code;
 
-  code.init(rt.environment(), rt.cpuFeatures());
-  code.setLogger(&logger);
+  // code.init(rt.environment(), rt.cpuFeatures());
+  // code.setLogger(&logger);
 
-  x86::Compiler cc(&code);
-  auto sig = FuncSignature::build<int, int, int>();
+  // x86::Compiler cc(&code);
+  // FuncSignature sig;
+  // sig.setRet(TypeId::kInt32);
+  // sig.addArg(TypeId::kInt32);
+  // sig.addArg(TypeId::kInt32);
 
-  auto funcNode = cc.addFunc(sig);
+  // auto funcNode = cc.addFunc(sig);
 
-  funcNode->frame().setPreservedFP();
+  // funcNode->frame().setPreservedFP();
 
-  x86::Gp a = cc.newInt32("a");
-  x86::Gp b = cc.newInt32("b");
+  // x86::Gp a = cc.newInt32("a");
+  // x86::Gp b = cc.newInt32("b");
 
-  funcNode->setArg(0, a);
-  funcNode->setArg(1, b);
-  cc.add(a, b);
-  cc.ret(a);
-  cc.endFunc();
-  cc.finalize();
+  // funcNode->setArg(0, a);
+  // funcNode->setArg(1, b);
+  // cc.add(a, b);
+  // cc.ret(a);
+  // cc.endFunc();
+  // cc.finalize();
 
-  typedef int (*AddFunc)(int, int);
-  AddFunc addFunc;
-  Error err = rt.add(&addFunc, &code);
-  if (err) {
-    printf("Error: %s\n", DebugUtils::errorAsString(err));
-    return 1;
-  }
+  // typedef int (*AddFunc)(int, int);
+  // AddFunc addFunc;
+  // Error err = rt.add(&addFunc, &code);
+  // if (err) {
+  //   printf("Error: %s\n", DebugUtils::errorAsString(err));
+  //   return 1;
+  // }
 
-  int result = addFunc(40, 2);
+  // int result = addFunc(40, 2);
 
-  printf("result: %d\n", result);
-  printf("logger: %s\n", logger.data());
+  // printf("result: %d\n", result);
+  // printf("logger: %s\n", logger.data());
 
-  return 0;
+  // return 0;
 }
