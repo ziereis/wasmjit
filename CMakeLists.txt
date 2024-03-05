@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.26)
-project(wasm__)
+project(wasmjit)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 
-add_executable(wasm__ main.cpp)
-
-target_link_libraries(wasm__ asmjit)
-include_directories(vendor/asmjit/src
-                    vendor/asmjit/build)
 add_subdirectory(vendor/asmjit)
+
+add_executable(wasmjit main.cpp)
+target_compile_options(wasmjit PRIVATE -Wall -Wextra -g)
+target_link_libraries(wasmjit asmjit)
+include_directories(vendor/asmjit/src)

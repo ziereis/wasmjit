@@ -8,6 +8,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <new>
+#include <span>
+#include <cassert>
 
 template <uint32_t blockSize>
 struct MemoryBlock {
