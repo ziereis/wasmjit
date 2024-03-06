@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.26)
+cmake_minimum_required(VERSION 3.22)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(wasmjit)
 
 set(CMAKE_CXX_STANDARD 20)
