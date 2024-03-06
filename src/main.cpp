@@ -1,7 +1,12 @@
 #include "ArenaAllocator.hpp"
+#include "asmjit/core/codeholder.h"
+#include "asmjit/core/compiler.h"
+#include "asmjit/core/constpool.h"
+#include "asmjit/core/formatter.h"
 #include "asmjit/core/func.h"
 #include "asmjit/core/jitruntime.h"
 #include "asmjit/core/logger.h"
+#include "asmjit/core/operand.h"
 #include "asmjit/core/string.h"
 #include "asmjit/x86/x86compiler.h"
 #include "asmjit/x86/x86operand.h"
@@ -12,12 +17,14 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 #include "tzUtils.hpp"
 #include <variant>
@@ -283,6 +290,7 @@ public:
 
   std::span<ValueType> paramTypes;
   ValueType returnType;
+  std::optional<Label> label;
 private:
 };
 
@@ -379,8 +387,8 @@ public:
     }
   }
 
-private:
   std::span<ExportEntity> exports;
+private:
 };
 
 struct ImportedName: NonMoveable, NonCopyable {
@@ -439,12 +447,14 @@ private:
   std::span<ImportedName> importedNames;
 };
 
+constexpr OpcodeStringTable g_wasmOpcodeStringTable;
 
 class WasmModule : NonCopyable, NonMoveable {
 public:
   WasmModule() {
     code.init(runtime.environment(), runtime.cpuFeatures());
     code.setLogger(&logger);
+    logger.setFlags(FormatFlags::kMachineCode);
   }
 
   void readCompressedLocals(BinaryReader &reader, std::vector<ValueType> &out) {
@@ -497,11 +507,37 @@ public:
     case ValueType::NONE:
       throw std::runtime_error("Invalid type");
     }
+    return {};
   }
 
+  void* getEntryPoint() {
+    std::optional<u32> mainIdx;
+    for (auto &entity : exportSection.exports) {
+      if (entity.name == "main") {
+        mainIdx = entity.entityIndex;
+      }
+    }
+    if (!mainIdx.has_value()) {
+      throw std::runtime_error("No entry point found function");
+    }
+    std::optional<Label> mainlabel = typeSection.types[*mainIdx].label;
 
+    if (!mainlabel.has_value()) {
+      throw std::runtime_error("no label in main function, error in codegen");
+    }
 
-  void *genCode(ArenaAllocator &alloc, BinaryReader &reader) {
+    mainFn main;
+    Error err = runtime.add(&main, &code);
+    if (err) {
+      printf("Error: %s\n", DebugUtils::errorAsString(err));
+      return nullptr;
+    }
+
+    auto offset = code.labelOffsetFromBase(mainlabel.value());
+    return reinterpret_cast<u8*>(main) + offset;
+  }
+
+  void genCode(ArenaAllocator &alloc, BinaryReader &reader) {
     x86::Compiler cc(&code);
     u32 numFuncs = reader.readIntLeb<u32>();
     std::cout << "numFuncs: " << std::to_string(numFuncs) << std::endl;
@@ -512,13 +548,19 @@ public:
     for (u32 i = 0; i < numFuncs; i++) {
       localTypes.clear();
       localsRegMap.clear();
+      ccStack.clear();
 
       auto typeIdx = fnDeclarationSection.functions[i];
-      auto& signature = typeSection.types[typeIdx];
+      auto &signature = typeSection.types[typeIdx];
+      if (signature.label.has_value()) {
+        cc.bind(signature.label.value());
+      }
+
       signature.dump();
 
       auto ccSig = genSignature(signature);
       auto funcNode = cc.addFunc(ccSig);
+      signature.label = funcNode->label();
       funcNode->frame().setPreservedFP();
 
       std::cout << "Function: " << std::to_string(i) << std::endl;
@@ -539,7 +581,7 @@ public:
 
       while(true) {
         WasmOpcode op = static_cast<WasmOpcode>(reader.read<u8>());
-
+        std::cout << g_wasmOpcodeStringTable.Get(op) << std::endl;
         switch (op) {
           case WasmOpcode::END: {
             assert(ccStack.size() <= 1);
@@ -557,34 +599,59 @@ public:
             ccStack.push_back(localsRegMap[localIdx]);
             break;
           }
+          case WasmOpcode::LOCAL_SET: {
+            auto localIdx = reader.readIntLeb<u32>();
+            auto reg = ccStack.back();
+            ccStack.pop_back();
+            localsRegMap[localIdx] = reg;
+            break;
+          }
           case WasmOpcode::I32_ADD: {
             x86::Gp op1 = ccStack.back();
             ccStack.pop_back();
             cc.add(ccStack.back(), op1);
+            break;
+          }
+          case WasmOpcode::I32_CONST: {
+            auto value = reader.readIntLeb<u32>();
+            auto reg = cc.newInt32();
+            cc.mov(reg, imm(value));
+            ccStack.push_back(reg);
+            break;
+          }
+          case WasmOpcode::CALL: {
+            auto fnIdx = reader.readIntLeb<u32>();
+            std::cout << "Call: " << std::to_string(fnIdx) << std::endl;
+            FunctionPrototype &fnSig = typeSection.types[fnIdx];
+            auto calleeSig = genSignature(fnSig);
+            if (!fnSig.label.has_value()) {
+              fnSig.label = cc.newLabel();
+            }
+            InvokeNode* invokeNode;
+            cc.invoke(&invokeNode, fnSig.label.value(), calleeSig);
+            for (u32 i = 0; i < fnSig.paramTypes.size(); i++) {
+              invokeNode->setArg(i, ccStack.back());
+              ccStack.pop_back();
+            }
+            x86::Gp retReg = getReg(cc, fnSig.returnType);
+            invokeNode->setRet(0, retReg);
+            ccStack.push_back(retReg);
+            break;
           }
           default:
-            std::runtime_error{"not implemented!"};
+            throw std::runtime_error{"not implemented!"};
         }
       }
     end:
-      cc.finalize();
-      printf("logger: %s\n", logger.data());
-      typedef int (*AddFunc)(int, int);
-      AddFunc addFunc;
-      Error err = runtime.add(&addFunc, &code);
-        if (err) {
-          printf("Error: %s\n", DebugUtils::errorAsString(err));
-          exit(1);
-        }
-
-        int result = addFunc(40, 2);
-
-        printf("result: %d\n", result);
-
-
     }
-    return nullptr;
-  }
+    cc.finalize();
+    Error err = runtime.add(&main, &code);
+    if (err) {
+      printf("Error: %s\n", DebugUtils::errorAsString(err));
+      return;
+    }
+    std::cout << logger.data() << std::endl;
+   }
 
   void compile(std::span<const u8> wasm_file) {
     ArenaAllocator allocator;
@@ -631,13 +698,19 @@ public:
         break;
       case WasmSectionId::ELEMENT_SECTION:
         break;
-      case WasmSectionId::CODE_SECTION:
+      case WasmSectionId::CODE_SECTION: {
         genCode(allocator, reader);
+        mainFn main = reinterpret_cast<mainFn>(getEntryPoint());
+        auto res = main();
+        std::cout << "Result: " << std::to_string(res) << std::endl;
         break;
+      }
       case WasmSectionId::DATA_SECTION:
         break;
       case WasmSectionId::X_END_OF_ENUM:
         break;
+      default:
+        throw std::runtime_error("Invalid section id");
       }
     }
   }
@@ -650,11 +723,12 @@ private:
   JitRuntime runtime;
   CodeHolder code;
   StringLogger logger;
-
+  using mainFn = int (*)(void);
+  mainFn main;
 };
 
 int main() {
-  auto wasm_file = MappedFile("../wasm_adder.wasm");
+  auto wasm_file = MappedFile("../wasm_tests/wasm_adder.wasm");
   wasm_file.dump();
   WasmModule module;
   module.compile({wasm_file.data(), wasm_file.size()});

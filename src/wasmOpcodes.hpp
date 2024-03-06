@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <string_view>
 
 #define FOR_EACH_WASM_OPCODE                                                                                                \
   /*   Name          Encoding       IsSpecial   #Int Consume/#Float Consume/Output           Operand Encoding Type */       \
@@ -255,10 +256,28 @@ F( XX_I64_GLOBAL_SET,  0xF7,         false,    1,  0,  WasmValueType::X_END_OF_E
 F( XX_F32_GLOBAL_SET,  0xF8,         false,    0,  1,  WasmValueType::X_END_OF_ENUM,   WasmOpcodeOperandKind::U32         ) \
 F( XX_F64_GLOBAL_SET,  0xF9,         false,    0,  1,  WasmValueType::X_END_OF_ENUM,   WasmOpcodeOperandKind::U32         )
 
-enum class WasmOpcode : uint8_t
-{
+enum class WasmOpcode : uint8_t {
 #define F(opcodeName, opcodeEncoding, ...) opcodeName = opcodeEncoding,
+  FOR_EACH_WASM_OPCODE
+#undef F
+      X_END_OF_ENUM
+};
+
+struct alignas(64) OpcodeStringTable
+{
+    constexpr OpcodeStringTable()
+    {
+#define F(opcodeName, opcodeEncoding, ...) m_info[opcodeEncoding] = #opcodeName;
 FOR_EACH_WASM_OPCODE
 #undef F
-X_END_OF_ENUM
+    }
+
+
+    std::string_view Get(WasmOpcode opcode) const
+    {
+        return m_info[static_cast<uint8_t>(opcode)];
+    }
+
+    std::string_view m_info[256];
+
 };
