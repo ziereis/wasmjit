@@ -10,6 +10,7 @@
 #include "asmjit/core/string.h"
 #include "asmjit/x86/x86compiler.h"
 #include "asmjit/x86/x86operand.h"
+#include "tzUtils.hpp"
 #include "wasmOpcodes.hpp"
 #include <asmjit/asmjit.h>
 #include <cassert>
@@ -25,9 +26,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
-#include <vector>
-#include "tzUtils.hpp"
 #include <variant>
+#include <vector>
 
 using namespace asmjit;
 using u64 = uint64_t;
@@ -291,6 +291,7 @@ public:
   std::span<ValueType> paramTypes;
   ValueType returnType;
   std::optional<Label> label;
+
 private:
 };
 
@@ -310,10 +311,11 @@ public:
   }
 
   std::span<FunctionPrototype> types;
+
 private:
 };
 
-class FunctionSection: NonCopyable, NonMoveable {
+class FunctionSection : NonCopyable, NonMoveable {
 public:
   // TODO: missing a lot of stuff
   void parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
@@ -330,6 +332,7 @@ public:
   }
 
   std::span<u32> functions;
+
 private:
 };
 
@@ -354,7 +357,7 @@ std::string asStr(ExportType type) {
   return "Unknown ExportType";
 }
 
-struct ExportEntity : NonCopyable, NonMoveable{
+struct ExportEntity : NonCopyable, NonMoveable {
   std::string_view name;
   u32 entityIndex;
   ExportType type;
@@ -388,10 +391,11 @@ public:
   }
 
   std::span<ExportEntity> exports;
+
 private:
 };
 
-struct ImportedName: NonMoveable, NonCopyable {
+struct ImportedName : NonMoveable, NonCopyable {
   std::string_view l1Name;
   std::string_view l2Name;
 
@@ -420,7 +424,7 @@ enum ImportType : u8 {
   GLOBAL = 3,
 };
 
-class ImportSection: NonMoveable, NonCopyable {
+class ImportSection : NonMoveable, NonCopyable {
 public:
   void parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
     auto count = reader.readIntLeb<u32>();
@@ -447,7 +451,48 @@ private:
   std::span<ImportedName> importedNames;
 };
 
+class OperandStack {
+public:
+  OperandStack() { activeStack = &mainStack; }
+
+  void push(x86::Gp reg) { activeStack->push_back(reg); }
+
+  x86::Gp pop() {
+    auto reg = activeStack->back();
+    activeStack->pop_back();
+    return reg;
+  }
+
+  x86::Gp &peek() { return activeStack->back(); }
+
+  void snapshot() {
+    assert(activeStack == &mainStack);
+    activeStack = &tempStack;
+    tempStack.clear();
+    std::copy(mainStack.begin(), mainStack.end(), std::back_inserter(tempStack));
+  }
+
+  void restore() {
+    activeStack = &mainStack;
+  }
+
+  void clear() { mainStack.clear(); }
+
+  bool empty() { return activeStack->empty(); }
+  std::size_t size() { return activeStack->size(); }
+
+private:
+  std::vector<x86::Gp> *activeStack;
+  std::vector<x86::Gp> mainStack;
+  std::vector<x86::Gp> tempStack;
+};
+
 constexpr OpcodeStringTable g_wasmOpcodeStringTable;
+
+struct BlockInfo {
+  Label label;
+  std::optional<x86::Gp> mergeReg;
+};
 
 class WasmModule : NonCopyable, NonMoveable {
 public:
@@ -494,7 +539,7 @@ public:
     return sig;
   }
 
-  x86::Gp getReg(x86::Compiler& cc, ValueType type) {
+  x86::Gp getReg(x86::Compiler &cc, ValueType type) {
     switch (type) {
     case ValueType::I32:
       return cc.newInt32();
@@ -510,7 +555,7 @@ public:
     return {};
   }
 
-  void* getEntryPoint() {
+  void *getEntryPoint() {
     std::optional<u32> mainIdx;
     for (auto &entity : exportSection.exports) {
       if (entity.name == "main") {
@@ -534,7 +579,7 @@ public:
     }
 
     auto offset = code.labelOffsetFromBase(mainlabel.value());
-    return reinterpret_cast<u8*>(main) + offset;
+    return reinterpret_cast<u8 *>(main) + offset;
   }
 
   void genCode(ArenaAllocator &alloc, BinaryReader &reader) {
@@ -543,12 +588,15 @@ public:
     std::cout << "numFuncs: " << std::to_string(numFuncs) << std::endl;
     std::vector<ValueType> localTypes;
     std::vector<x86::Gp> localsRegMap;
-    std::vector<x86::Gp> ccStack;
+    OperandStack ccStack;
+    std::vector<BlockInfo> blockStack;
 
     for (u32 i = 0; i < numFuncs; i++) {
       localTypes.clear();
       localsRegMap.clear();
       ccStack.clear();
+      blockStack.clear();
+
 
       auto typeIdx = fnDeclarationSection.functions[i];
       auto &signature = typeSection.types[typeIdx];
@@ -578,71 +626,119 @@ public:
         localsRegMap.emplace_back(getReg(cc, localTypes[i]));
       }
 
-
-      while(true) {
+      while (true) {
         WasmOpcode op = static_cast<WasmOpcode>(reader.read<u8>());
         std::cout << g_wasmOpcodeStringTable.Get(op) << std::endl;
         switch (op) {
-          case WasmOpcode::END: {
+        case WasmOpcode::END: {
+          if (!blockStack.empty()) {
+            BlockInfo &info = blockStack.back();
+            if (info.mergeReg.has_value()) {
+              cc.mov(info.mergeReg.value(), ccStack.pop());
+            }
+            cc.jmp(info.label);
+            cc.bind(info.label);
+            ccStack.restore();
+            blockStack.pop_back();
+            break;
+          } else {
             assert(ccStack.size() <= 1);
             if (ccStack.empty()) {
               cc.ret();
             } else {
-              cc.ret(ccStack.back());
+              cc.ret(ccStack.peek());
             }
-              cc.endFunc();
-              goto end;
-
+            cc.endFunc();
+            goto end;
           }
-          case WasmOpcode::LOCAL_GET: {
-            auto localIdx = reader.readIntLeb<u32>();
-            ccStack.push_back(localsRegMap[localIdx]);
-            break;
+        }
+        case WasmOpcode::LOCAL_GET: {
+          auto localIdx = reader.readIntLeb<u32>();
+          ccStack.push(localsRegMap[localIdx]);
+          break;
+        }
+        case WasmOpcode::LOCAL_SET: {
+          auto localIdx = reader.readIntLeb<u32>();
+          auto reg = ccStack.pop();
+          localsRegMap[localIdx] = reg;
+          break;
+        }
+        case WasmOpcode::I32_ADD: {
+          x86::Gp op1 = ccStack.pop();
+          cc.add(ccStack.peek(), op1);
+          break;
+        }
+        case WasmOpcode::I32_CONST: {
+          auto value = reader.readIntLeb<u32>();
+          auto reg = cc.newInt32();
+          cc.mov(reg, imm(value));
+          ccStack.push(reg);
+          break;
+        }
+        case WasmOpcode::CALL: {
+          auto fnIdx = reader.readIntLeb<u32>();
+          std::cout << "Call: " << std::to_string(fnIdx) << std::endl;
+          FunctionPrototype &fnSig = typeSection.types[fnIdx];
+          auto calleeSig = genSignature(fnSig);
+          if (!fnSig.label.has_value()) {
+            fnSig.label = cc.newLabel();
           }
-          case WasmOpcode::LOCAL_SET: {
-            auto localIdx = reader.readIntLeb<u32>();
-            auto reg = ccStack.back();
-            ccStack.pop_back();
-            localsRegMap[localIdx] = reg;
-            break;
+          InvokeNode *invokeNode;
+          cc.invoke(&invokeNode, fnSig.label.value(), calleeSig);
+          for (u32 i = 0; i < fnSig.paramTypes.size(); i++) {
+            invokeNode->setArg(i, ccStack.pop());
           }
-          case WasmOpcode::I32_ADD: {
-            x86::Gp op1 = ccStack.back();
-            ccStack.pop_back();
-            cc.add(ccStack.back(), op1);
-            break;
+          x86::Gp retReg = getReg(cc, fnSig.returnType);
+          invokeNode->setRet(0, retReg);
+          ccStack.push(retReg);
+          break;
+        }
+        case WasmOpcode::I32_GT_S: {
+          x86::Gp op1 = ccStack.pop();
+          x86::Gp op2 = ccStack.pop();
+          x86::Gp result = cc.newInt32();
+          cc.cmp(op1, op2);
+          cc.setg(result.r8());
+          ccStack.push(result);
+          break;
+        }
+        case WasmOpcode::IF: {
+          BlockInfo info;
+          auto resType = static_cast<ValueType>(reader.read<u8>());
+          std::cout << "resType: " << asStr(static_cast<ValueType>(resType))
+                    << std::endl;
+          if (resType != ValueType::NONE) {
+            info.mergeReg = getReg(cc, resType);
           }
-          case WasmOpcode::I32_CONST: {
-            auto value = reader.readIntLeb<u32>();
-            auto reg = cc.newInt32();
-            cc.mov(reg, imm(value));
-            ccStack.push_back(reg);
-            break;
+          x86::Gp cond = ccStack.pop();
+          cc.cmp(cond, 0);
+          Label elseLabel = cc.newLabel();
+          cc.jz(elseLabel);
+          info.label = elseLabel;
+          blockStack.push_back(info);
+          ccStack.snapshot();
+          break;
+        }
+        case WasmOpcode::ELSE: {
+          // finish the if block
+          BlockInfo &info = blockStack.back();
+          if (info.mergeReg.has_value()) {
+            cc.mov(info.mergeReg.value(), ccStack.pop());
           }
-          case WasmOpcode::CALL: {
-            auto fnIdx = reader.readIntLeb<u32>();
-            std::cout << "Call: " << std::to_string(fnIdx) << std::endl;
-            FunctionPrototype &fnSig = typeSection.types[fnIdx];
-            auto calleeSig = genSignature(fnSig);
-            if (!fnSig.label.has_value()) {
-              fnSig.label = cc.newLabel();
-            }
-            InvokeNode* invokeNode;
-            cc.invoke(&invokeNode, fnSig.label.value(), calleeSig);
-            for (u32 i = 0; i < fnSig.paramTypes.size(); i++) {
-              invokeNode->setArg(i, ccStack.back());
-              ccStack.pop_back();
-            }
-            x86::Gp retReg = getReg(cc, fnSig.returnType);
-            invokeNode->setRet(0, retReg);
-            ccStack.push_back(retReg);
-            break;
-          }
-          default:
-            throw std::runtime_error{"not implemented!"};
+          Label endLabel = cc.newLabel();
+          cc.jmp(endLabel);
+          ccStack.restore();
+          ccStack.snapshot();
+          cc.bind(info.label);
+          info.label = endLabel;
+          break;
+        }
+        default:
+          throw std::runtime_error{"not implemented!"};
         }
       }
     end:
+      continue;
     }
     cc.finalize();
     Error err = runtime.add(&main, &code);
@@ -651,7 +747,7 @@ public:
       return;
     }
     std::cout << logger.data() << std::endl;
-   }
+  }
 
   void compile(std::span<const u8> wasm_file) {
     ArenaAllocator allocator;
@@ -728,7 +824,7 @@ private:
 };
 
 int main() {
-  auto wasm_file = MappedFile("../wasm_tests/wasm_adder.wasm");
+  auto wasm_file = MappedFile("../wasm_tests/wasm_branch.wasm");
   wasm_file.dump();
   WasmModule module;
   module.compile({wasm_file.data(), wasm_file.size()});
@@ -756,6 +852,13 @@ int main() {
 
   // funcNode->setArg(0, a);
   // funcNode->setArg(1, b);
+  // auto c = cc.newInt32("c");
+  // cc.mov(c, 0);
+  // auto c_1 = c;
+  // auto c_2 = c;
+  // cc.add(c_1, 1);
+  // cc.add(c_2, 1);
+  // cc.add(a, 1);
   // cc.add(a, b);
   // cc.ret(a);
   // cc.endFunc();

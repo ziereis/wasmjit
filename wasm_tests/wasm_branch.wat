@@ -1,18 +1,24 @@
 (module
   (import "test" "test" (func $test (param i32)))
-  (func $conditional (param $a i32) (result i32)
-    (local $c i32)
-    i32.const 5
-    local.set $c
-    local.get $a
-    local.get $b
+  (func $conditional (param $x i32) (result i32)
+    local.get $x
+    i32.const 10
+    i32.gt_s
+    if (result i32)
+      local.get $x
+      i32.const 10
+      i32.add
+    else
+      local.get $x
+      i32.const 5
+      i32.add
+    end
+    i32.const 100
     i32.add
-    local.get $c
-    i32.add)
+  )
   (func $main (result i32)
-    i32.const 1
-    i32.const 2
-    call $addconst)
+    i32.const 12
+    call $conditional)
   (export "main" (func $main))
-  (export "addconst" (func $addconst))
+  (export "conditional" (func $conditional))
 )
