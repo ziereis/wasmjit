@@ -1,6 +1,11 @@
 #include <cstdint>
 #include <string_view>
 
+
+enum class WasmDefines : uint32_t {
+  MAGIC = 0x6D736100,
+};
+
 #define FOR_EACH_WASM_OPCODE                                                                                                \
   /*   Name          Encoding       IsSpecial   #Int Consume/#Float Consume/Output           Operand Encoding Type */       \
 F( UNREACHABLE,        0x00,           true                                        ,   WasmOpcodeOperandKind::NONE        ) \
