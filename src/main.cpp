@@ -582,6 +582,24 @@ public:
     return reinterpret_cast<u8 *>(main) + offset;
   }
 
+  void finalize(x86::Compiler &cc) {
+    cc.finalize();
+    Error err = runtime.add(&main, &code);
+    if (err) {
+      printf("Error: %s\n", DebugUtils::errorAsString(err));
+      return;
+    }
+    std::cout << logger.data() << std::endl;
+  }
+
+  void i32Add(x86::Compiler &cc, x86::Gp dst, x86::Gp op1, x86::Gp op2) {
+    if (dst != op1) {
+      cc.lea(dst, x86::ptr(op1, op2, 1, 0));
+    } else {
+      cc.add(dst, op2);
+    }
+  }
+
   void genCode(ArenaAllocator &alloc, BinaryReader &reader) {
     x86::Compiler cc(&code);
     u32 numFuncs = reader.readIntLeb<u32>();
@@ -632,13 +650,15 @@ public:
         switch (op) {
         case WasmOpcode::END: {
           if (!blockStack.empty()) {
+
             BlockInfo &info = blockStack.back();
             if (info.mergeReg.has_value()) {
               cc.mov(info.mergeReg.value(), ccStack.pop());
+              ccStack.restore();
+              ccStack.push(info.mergeReg.value());
             }
             cc.jmp(info.label);
             cc.bind(info.label);
-            ccStack.restore();
             blockStack.pop_back();
             break;
           } else {
@@ -664,8 +684,11 @@ public:
           break;
         }
         case WasmOpcode::I32_ADD: {
+          x86::Gp target = getReg(cc, ValueType::I32);
           x86::Gp op1 = ccStack.pop();
-          cc.add(ccStack.peek(), op1);
+          x86::Gp op2 = ccStack.pop();
+          i32Add(cc, target, op1, op2);
+          ccStack.push(target);
           break;
         }
         case WasmOpcode::I32_CONST: {
@@ -691,6 +714,7 @@ public:
           x86::Gp retReg = getReg(cc, fnSig.returnType);
           invokeNode->setRet(0, retReg);
           ccStack.push(retReg);
+          finalize(cc);
           break;
         }
         case WasmOpcode::I32_GT_S: {

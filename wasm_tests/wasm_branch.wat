@@ -10,8 +10,6 @@
       i32.add
     else
       local.get $x
-      i32.const 5
-      i32.add
     end
     i32.const 100
     i32.add
