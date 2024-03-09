@@ -293,8 +293,8 @@ void WasmModlue::parseSections(std::span<const u8> wasmFile) {
     WASM_VALIDATE(sectionId != static_cast<u8>(WasmSection::CUSTOM_SECTION),
                   "Custom sections are not supported");
     auto sectionSize = reader.readIntLeb<u32>();
-    std::cout << "Section: " << toString(static_cast<WasmSection>(sectionId))
-              << " size: " << std::to_string(sectionSize) << std::endl;
+    // std::cout << "Section: " << toString(static_cast<WasmSection>(sectionId))
+    //           << " size: " << std::to_string(sectionSize) << std::endl;
     switch (static_cast<WasmSection>(sectionId)) {
     case WasmSection::TYPE_SECTION:
       typeSection.parseSection(allocator, reader);
@@ -331,9 +331,13 @@ void WasmModlue::parseSections(std::span<const u8> wasmFile) {
       throw std::runtime_error("Invalid section id");
     }
   }
-
 }
 
-
+void WasmModlue::dump() const {
+  typeSection.dump();
+  importSection.dump();
+  functionSection.dump();
+  exportSection.dump();
+}
 
 } // namespace wasmjit
