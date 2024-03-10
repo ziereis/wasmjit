@@ -1,9 +1,6 @@
 [submodule "asmjit"]
 	path = vendor/asmjit
 	url = https://github.com/asmjit/asmjit
-[submodule "doctest"]
-    path = vendor/doctest
-    url = https://github.com/doctest/doctest
 [submodule "vendor/doctest"]
 	path = vendor/doctest
 	url = https://github.com/doctest/doctest
