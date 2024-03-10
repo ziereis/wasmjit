@@ -4,3 +4,6 @@
 [submodule "doctest"]
     path = vendor/doctest
     url = https://github.com/doctest/doctest
+[submodule "vendor/doctest"]
+	path = vendor/doctest
+	url = https://github.com/doctest/doctest
