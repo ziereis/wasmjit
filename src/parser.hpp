@@ -28,7 +28,7 @@ public:
   template <class T> T peek() const;
 
   [[nodiscard]] bool hasMore() const;
-  std::span<const u8> remainingData() const;
+  std::span<const u8> getChunk(std::size_t count) const;
 
 private:
   const uint8_t *data;
@@ -145,8 +145,9 @@ struct CodeSection : NonMoveable, NonCopyable {
   std::span<const u8> code;
 };
 
-struct WasmModlue : NonCopyable, NonMoveable {
+struct WasmModule : NonCopyable, NonMoveable {
   void parseSections(std::span<const u8> data);
+  FunctionPrototype& getPrototype(u32 index) const;
   void dump() const;
 
   ArenaAllocator allocator;

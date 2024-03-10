@@ -65,8 +65,11 @@ T BinaryReader::peek() const {
 
 bool BinaryReader::hasMore() const { return pos < size; }
 
-std::span<const u8> BinaryReader::remainingData() const {
-  return std::span<const u8>(data + pos, size - pos);
+std::span<const u8> BinaryReader::getChunk(std::size_t count) const {
+  if (pos + count > size) {
+    throw std::runtime_error("Out of data");
+  }
+  return std::span<const u8>(data + pos, count);
 }
 
 
@@ -278,7 +281,12 @@ void ImportSection::dump() const {
   }
 }
 
-void WasmModlue::parseSections(std::span<const u8> wasmFile) {
+FunctionPrototype &WasmModule::getPrototype(u32 index) const {
+  u32 typeIdx = functionSection.functions[index];
+  return typeSection.types[typeIdx];
+}
+
+void WasmModule::parseSections(std::span<const u8> wasmFile) {
   BinaryReader reader(wasmFile.data(), wasmFile.size());
 
   auto magic = reader.read<u32>();
@@ -323,7 +331,7 @@ void WasmModlue::parseSections(std::span<const u8> wasmFile) {
     case WasmSection::ELEMENT_SECTION:
       break;
     case WasmSection::CODE_SECTION:
-      codeSection.code = reader.remainingData();
+      codeSection.code = reader.getChunk(sectionSize);
       break;
     case WasmSection::DATA_SECTION:
       break;
@@ -333,7 +341,7 @@ void WasmModlue::parseSections(std::span<const u8> wasmFile) {
   }
 }
 
-void WasmModlue::dump() const {
+void WasmModule::dump() const {
   typeSection.dump();
   importSection.dump();
   functionSection.dump();
