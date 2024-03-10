@@ -1,7 +1,6 @@
-#include "compiler.hpp"
-#include "parser.hpp"
-#include "tz-utils.hpp"
-#include "wasm-types.hpp"
+#include "lib/compiler.hpp"
+#include "lib/parser.hpp"
+#include "lib/wasm-types.hpp"
 #include <format>
 #include <new>
 #include <string_view>
@@ -133,6 +132,7 @@ int runWasm(std::string_view fileName) {
   return entry();
 }
 
-int main() { return runWasm("../wasm_tests/wasm_adder.wasm"); }
 
 } // namespace wasmjit
+
+int main() { return wasmjit::runWasm("../wasm_examples/add.wasm"); }

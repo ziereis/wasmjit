@@ -1,20 +1,15 @@
 #include <cstdio>
-#include <optional>
 #include <span>
-#include <vector>
 
-#include "asmjit/asmjit.h"
-#include "asmjit/core/compiler.h"
-#include "asmjit/core/func.h"
-#include "asmjit/core/globals.h"
-#include "asmjit/x86/x86compiler.h"
-#include "asmjit/x86/x86operand.h"
 #include "compiler.hpp"
 #include "parser.hpp"
 
 using namespace asmjit;
 
 namespace wasmjit {
+
+
+OperandStack::OperandStack() {}
 
 void OperandStack::push(x86::Gp reg) { stack.push_back(reg); }
 
@@ -32,7 +27,7 @@ x86::Gp &OperandStack::peek() {
 
 void OperandStack::clear() { stack.clear(); }
 
-bool OperandStack::empty() { return stack.empty(); }
+bool OperandStack::empty() const { return stack.empty(); }
 
 std::size_t OperandStack::size() { return stack.size(); }
 
@@ -63,7 +58,15 @@ void BlockManager::initFromRelative(i32 depth) {
   blocks[activeBlock].stack = blocks[activeBlock - depth].stack;
 }
 
+void BlockManager::pushOp(x86::Gp reg) { blocks[activeBlock].stack.push(reg); }
+x86::Gp BlockManager::popOp() { return blocks[activeBlock].stack.pop(); }
+
+bool BlockManager::stackEmpty() const {
+  return blocks[activeBlock].stack.empty();
+}
+
 bool BlockManager::empty() const { return blocks.empty(); }
+std::size_t BlockManager::size() const { return blocks.size(); }
 
 void BlockManager::clear() {
   blocks.clear();
@@ -87,6 +90,16 @@ static TypeId WasmTtoJitT(WasmValueType type) {
   }
 }
 
+WasmCompiler::WasmCompiler(u32 funcCount) {
+  code.init(runtime.environment(), runtime.cpuFeatures());
+  code.setLogger(&logger);
+  code.attach(&cc);
+  fnLabels.reserve(funcCount);
+  for (u32 i = 0; i < funcCount; i++) {
+    fnLabels.push_back(cc.newLabel());
+  }
+}
+
 x86::Gp WasmCompiler::createReg(WasmValueType type) {
   switch (type) {
   case WasmValueType::I32:
@@ -103,14 +116,10 @@ x86::Gp WasmCompiler::createReg(WasmValueType type) {
   }
 }
 
-WasmCompiler::WasmCompiler(u32 fnCount) : cc(&code) {
-  code.init(runtime.environment(), runtime.cpuFeatures());
-  code.setLogger(&logger);
-  fnLabels.resize(fnCount);
-}
 
 void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
                                  std::span<WasmValueType> params) {
+  blockMngr.pushBlock(1);
   FuncSignature sig;
   sig.setRet(WasmTtoJitT(retType));
   for (auto param : params) {
@@ -119,7 +128,7 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
 
   auto funcNode = cc.addFunc(sig);
   funcNode->frame().setPreservedFP();
-  fnLabels[index] = funcNode->label();
+  cc.bind(fnLabels[index]);
   locals.reserve(params.size());
   for (u32 i = 0; i < params.size(); i++) {
     locals.push_back(createReg(params[i]));
@@ -130,9 +139,8 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
 void WasmCompiler::EndFunction() {
   cc.endFunc();
   locals.clear();
-  assert(ccStack.empty() && "OperandStack not empty at end of function");
-  ccStack.clear();
-  assert(blockMngr.empty() && "BlockManager not empty at end of function");
+  assert(blockMngr.stackEmpty() && "OperandStack not empty at end of function");
+  assert(blockMngr.size() == 1 && "BlockManager not empty at end of function");
   blockMngr.clear();
 }
 
@@ -147,12 +155,12 @@ void WasmCompiler::Call(u32 index, WasmValueType retType,
   InvokeNode *invokeNode;
   cc.invoke(&invokeNode, fnLabels[index], calleeSig);
   for (u32 i = 0; i < params.size(); i++) {
-    invokeNode->setArg(i, ccStack.pop());
+    invokeNode->setArg(i, blockMngr.popOp());
   }
   x86::Gp retReg = createReg(retType);
 
   invokeNode->setRet(0, retReg);
-  ccStack.push(retReg);
+  blockMngr.pushOp(retReg);
 }
 
 void WasmCompiler::AddLocals(std::span<WasmValueType> localTypes) {
@@ -163,7 +171,7 @@ void WasmCompiler::AddLocals(std::span<WasmValueType> localTypes) {
 
 void WasmCompiler::Return(WasmValueType type) {
   if (type != WasmValueType::NONE) {
-    cc.ret(locals.back());
+    cc.ret(blockMngr.popOp());
   } else {
     cc.ret();
   }
@@ -171,7 +179,7 @@ void WasmCompiler::Return(WasmValueType type) {
 
 void WasmCompiler::StartBlock(WasmValueType retType) {
   auto reg = createReg(retType);
-  ccStack.push(reg);
+  blockMngr.pushOp(reg);
   blockMngr.pushBlock(1);
 }
 
@@ -182,7 +190,7 @@ void WasmCompiler::EndBlock() {
 }
 
 void WasmCompiler::BrIfnz(i32 depth) {
-  auto reg = ccStack.pop();
+  auto reg = blockMngr.popOp();
   cc.test(reg, reg);
 
   BlockState &block = blockMngr.getRelative(depth - 1);
@@ -197,12 +205,12 @@ void WasmCompiler::Br(i32 depth) {
 void WasmCompiler::I32Const(i32 value) {
   auto reg = createReg(WasmValueType::I32);
   cc.mov(reg, value);
-  ccStack.push(reg);
+  blockMngr.pushOp(reg);
 }
 
 void WasmCompiler::_I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs) {
   if (dst != lhs) {
-    cc.lea(dst, x86::ptr(lhs, rhs, 1, 0));
+    cc.lea(dst, x86::ptr(lhs, rhs, 0, 0));
   } else {
     cc.add(dst, rhs);
   }
@@ -210,38 +218,35 @@ void WasmCompiler::_I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs) {
 
 void WasmCompiler::Add() {
   x86::Gp dst = createReg(WasmValueType::I32);
-  x86::Gp lhs = ccStack.pop();
-  x86::Gp rhs = ccStack.pop();
+  x86::Gp lhs = blockMngr.popOp();
+  x86::Gp rhs = blockMngr.popOp();
   _I32Add(dst, lhs, rhs);
-  ccStack.push(dst);
+  blockMngr.pushOp(dst);
 }
 
-void WasmCompiler::LocalGet(u32 index) { ccStack.push(locals[index]); }
+void WasmCompiler::LocalGet(u32 index) { blockMngr.pushOp(locals[index]); }
 
 void WasmCompiler::LocalSet(u32 index) {
-  auto reg = ccStack.pop();
+  auto reg = blockMngr.popOp();
   cc.mov(locals[index], reg);
 }
 
 void WasmCompiler::Gts() {
   x86::Gp dst = cc.newInt32();
-  x86::Gp lhs = ccStack.pop();
-  x86::Gp rhs = ccStack.pop();
+  x86::Gp lhs = blockMngr.popOp();
+  x86::Gp rhs = blockMngr.popOp();
   cc.cmp(lhs, rhs);
   cc.setg(dst.r8());
   cc.movzx(dst, dst.r8());
-  ccStack.push(dst);
+  blockMngr.pushOp(dst);
 }
 
-WasmCompiler::entryFunction WasmCompiler::finalize() {
+void WasmCompiler::finalize() {
   cc.finalize();
-
-  entryFunction fn;
-  Error err = runtime.add(&fn, &code);
+  Error err = runtime.add(&entry, &code);
   if (err) {
     printf("Error: %s\n", DebugUtils::errorAsString(err));
   }
-  return fn;
 }
 
 void WasmCompiler::dump() { std::cout << logger.data() << std::endl; }

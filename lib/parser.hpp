@@ -28,13 +28,41 @@ public:
   template <class T> T peek() const;
 
   [[nodiscard]] bool hasMore() const;
-  std::span<const u8> getChunk(std::size_t count) const;
+  std::span<const u8> readChunk(std::size_t count);
 
 private:
   const uint8_t *data;
   std::size_t size;
   std::size_t pos;
 };
+
+template <typename T>
+T BinaryReader::readIntLeb() {
+  static_assert(std::is_integral<T>::value && !std::is_same<T, bool>::value,
+                "T must be integral");
+  using U = typename std::make_unsigned<T>::type;
+  uint32_t shift = 0;
+  U result = 0;
+  while (true) {
+    assert(shift < sizeof(T) * 8);
+    uint8_t value = *reinterpret_cast<const uint8_t *>(data + pos);
+    result |= static_cast<U>(value & 0x7f) << shift;
+    shift += 7;
+    pos++;
+    if ((value & 0x80) == 0) {
+      if constexpr (std::is_signed<T>::value) {
+        if ((value & 0x40) && shift < sizeof(T) * 8) {
+          result |= (~static_cast<U>(0)) << shift;
+        }
+      }
+      break;
+    }
+  }
+  assert(pos <= size);
+  return static_cast<T>(result);
+}
+
+
 
 enum class WasmSection {
   CUSTOM_SECTION = 0,

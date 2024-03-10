@@ -1,9 +1,4 @@
-//
-// Created by ziereis on 24.02.24.
-//
-
-#ifndef WASM___ARENAALLOCATOR_HPP
-#define WASM___ARENAALLOCATOR_HPP
+#pragma once
 #include <cinttypes>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -74,7 +69,7 @@ public:
 
     template<class T>
     std::span<typename std::remove_all_extents<T>::type> constructSpan(std::size_t count) {
-        using U = std::remove_all_extents<T>::type;
+        using U =  typename std::remove_all_extents<T>::type;
         void* mem = allocate(sizeof(U) * count);
         if (mem == nullptr) {
             throw std::bad_alloc();
@@ -88,5 +83,3 @@ private:
     uint8_t* curAddr;
     uint8_t* curEnd;
 };
-
-#endif //WASM___ARENAALLOCATOR_HPP

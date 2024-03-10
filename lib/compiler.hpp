@@ -1,7 +1,6 @@
 #pragma once
 
 #include "asmjit/asmjit.h"
-#include "asmjit/x86/x86operand.h"
 #include "parser.hpp"
 #include <vector>
 
@@ -19,7 +18,7 @@ public:
 
   void clear();
 
-  bool empty();
+  bool empty() const;
   std::size_t size();
 
 private:
@@ -34,6 +33,9 @@ struct BlockState {
 
 class BlockManager {
 public:
+  void pushOp(x86::Gp reg);
+  x86::Gp popOp();
+  bool stackEmpty() const;
   void pushBlock(u32 resultArityd);
   void popBlock();
   BlockState &getActive();
@@ -41,6 +43,7 @@ public:
   void initFromRelative(i32 depth);
 
   bool empty() const;
+  std::size_t size() const;
   void clear();
 
 private:
@@ -50,8 +53,6 @@ private:
 
 class WasmCompiler {
 public:
-  using entryFunction = int (*)(void);
-
   WasmCompiler(u32 funcCount);
 
   void StartFunction(u32 index, WasmValueType retType,
@@ -76,10 +77,12 @@ public:
   void Add();
   void Gts();
 
-  entryFunction finalize();
+  void finalize();
+  template <typename T> T getEntry(u32 fnIdx);
   void dump();
 
 private:
+
   void _I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs);
   x86::Gp createReg(WasmValueType type);
 
@@ -87,11 +90,20 @@ private:
   CodeHolder code;
   x86::Compiler cc;
   StringLogger logger;
+  u8* entry;
 
   std::vector<x86::Gp> locals;
+  // TODO: template function count and make this a bitset and
+  // an array
+  //std::vector<bool>
   std::vector<Label> fnLabels;
-  OperandStack ccStack;
   BlockManager blockMngr;
 };
+
+template<class T>
+T WasmCompiler::getEntry(u32 fnIdx) {
+  auto offset = code.labelOffsetFromBase(fnLabels[fnIdx]);
+  return reinterpret_cast<T>(entry + offset);
+}
 
 } // namespace wasmjit
