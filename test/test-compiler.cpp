@@ -70,6 +70,21 @@ TEST_CASE("add and add const") {
   REQUIRE_EQ(fn(1, 2), 4);
 }
 
+TEST_CASE("decrement") {
+  WasmCompiler cc(1);
+  std::vector<WasmValueType> params = {WasmValueType::I32};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.LocalGet(0);
+  cc.I32Const(-1);
+  cc.Add();
+  cc.Return(WasmValueType::I32);
+  cc.EndFunction();
+  cc.finalize();
+  cc.dump();
+  auto fn = cc.getEntry<IntIntFn>(0);
+  REQUIRE_EQ(fn(42), 41);
+}
+
 TEST_CASE("function call, callee generated first") {
   WasmCompiler cc(2);
   std::vector<WasmValueType> params = {WasmValueType::I32};
@@ -92,6 +107,7 @@ TEST_CASE("function call, callee generated first") {
   REQUIRE_EQ(fn(), 42);
 }
 
+
 TEST_CASE("function call, caller generated first") {
   WasmCompiler cc(2);
   std::vector<WasmValueType> params = {WasmValueType::I32};
@@ -109,9 +125,33 @@ TEST_CASE("function call, caller generated first") {
   cc.Add();
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
-
   cc.finalize();
   cc.dump();
   auto fn = cc.getEntry<IntVoidFn>(1);
   REQUIRE_EQ(fn(), 42);
 }
+
+TEST_CASE("if else") {
+  WasmCompiler cc(1);
+  std::vector<WasmValueType> params = {WasmValueType::I32};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.LocalGet(0);
+  cc.I32Const(0);
+  cc.Gts();
+  cc.StartBlock(WasmValueType::I32);
+  cc.StartBlock(WasmValueType::I32);
+  cc.BrIfz(3);
+  cc.I32Const(1);
+  cc.Br(2);
+  cc.EndBlock();
+  cc.I32Const(2);
+  cc.EndBlock();
+  cc.Return(WasmValueType::I32);
+  cc.EndFunction();
+  cc.finalize();
+  cc.dump();
+  auto fn = cc.getEntry<IntIntFn>(0);
+  REQUIRE_EQ(fn(0), 2);
+  REQUIRE_EQ(fn(1), 1);
+}
+

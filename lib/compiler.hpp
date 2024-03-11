@@ -72,7 +72,6 @@ public:
   void BrIfz(i32 depth);
   void BrIfnz(i32 depth);
   void Br(i32 depth);
-  void BindLabel(i32 depth);
 
   void Add();
   void Gts();

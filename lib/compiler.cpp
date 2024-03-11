@@ -189,6 +189,14 @@ void WasmCompiler::EndBlock() {
   blockMngr.popBlock();
 }
 
+void WasmCompiler::BrIfz(i32 depth) {
+  auto reg = blockMngr.popOp();
+  cc.test(reg, reg);
+
+  BlockState &block = blockMngr.getRelative(depth - 1);
+  cc.jz(block.label);
+}
+
 void WasmCompiler::BrIfnz(i32 depth) {
   auto reg = blockMngr.popOp();
   cc.test(reg, reg);
