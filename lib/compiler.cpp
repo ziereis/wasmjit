@@ -141,10 +141,9 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
   for (auto param : params) {
     sig.addArg(WasmTtoJitT(param));
   }
-
+  cc.bind(fnLabels[index]);
   auto funcNode = cc.addFunc(sig);
   funcNode->frame().setPreservedFP();
-  cc.bind(fnLabels[index]);
   block.locals.reserve(params.size());
   for (u32 i = 0; i < params.size(); i++) {
     block.locals.push_back(createReg(params[i]));

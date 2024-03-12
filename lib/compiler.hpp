@@ -100,6 +100,7 @@ private:
 };
 
 template <class T> T WasmCompiler::getEntry(u32 fnIdx) {
+  assert(fnLabels[fnIdx].isValid());
   auto offset = code.labelOffsetFromBase(fnLabels[fnIdx]);
   return reinterpret_cast<T>(entry + offset);
 }

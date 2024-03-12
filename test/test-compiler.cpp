@@ -159,23 +159,45 @@ TEST_CASE("block with input") {
   cc.finalize();
   auto fn = cc.getEntry<IntIntFn>(0);
   std::cout << fn(42) << std::endl;
-  REQUIRE(fn(42) == 83);
+  REQUIRE_EQ(fn(42), 84);
 }
 
 TEST_CASE("block br_if") {
   WasmCompiler cc(1);
   std::vector<WasmValueType> params = {WasmValueType::I32};
   cc.StartFunction(0, WasmValueType::I32, params);
+  /*
+   * major problem here:
+   * both operand stack slots reference the same register
+   * Without deduplication:
+   * If the branch is taken it moves uninitialized memory into eax
+   * ////////////////////////////
+   * test edi, edi
+   * jz L3
+   * mov eax, 100
+   * lea eax, [eax+edi]
+   * mov dword ptr [rsp], eax
+   * L3:
+   * mov eax, dword ptr [rsp]
+   * ////////////////////
+   * so they shadow each other so i have to do deduplication by
+   * moving one stack slot into a new register
+   * (probably both stack slots since the local can be used after the block)
+   * and then also do a control merge at the end of the block
+   * TODO: deduplication and merge
+   */
   cc.StartBlock({}, 1);
+  cc.LocalGet(0);
   cc.LocalGet(0);
   cc.BrIfz(1);
   cc.I32Const(100);
+  cc.Add();
   cc.EndBlock();
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
+  cc.dump();
   auto fn = cc.getEntry<IntIntFn>(0);
   REQUIRE_EQ(fn(0), 0);
-  REQUIRE_EQ(fn(42), 100);
-  REQUIRE_EQ(fn(42), 42);
+  REQUIRE_EQ(fn(42), 142);
 }
