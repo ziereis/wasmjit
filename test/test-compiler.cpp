@@ -4,13 +4,16 @@
 
 #include "doctest.h"
 #include "lib/compiler.hpp"
-#include "lib/tz-utils.hpp"
+#include <iostream>
+
 
 using namespace wasmjit;
 
 using IntVoidFn = int (*)();
 using IntIntFn = int (*)(int);
 using IntIntIntFn = int (*)(int, int);
+
+
 
 
 TEST_CASE("return 1") {
@@ -22,6 +25,7 @@ TEST_CASE("return 1") {
   cc.finalize();
   cc.dump();
   auto fn = cc.getEntry<IntVoidFn>(0);
+  std::cout << fn() << std::endl;
   REQUIRE_EQ(fn(), 1);
 }
 
@@ -33,7 +37,6 @@ TEST_CASE("return param") {
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntIntFn>(0);
   REQUIRE_EQ(fn(42), 42);
 }
@@ -48,7 +51,6 @@ TEST_CASE("basic add") {
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntIntIntFn>(0);
   REQUIRE_EQ(fn(1, 2), 3);
 }
@@ -65,7 +67,6 @@ TEST_CASE("add and add const") {
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntIntIntFn>(0);
   REQUIRE_EQ(fn(1, 2), 4);
 }
@@ -80,7 +81,6 @@ TEST_CASE("decrement") {
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntIntFn>(0);
   REQUIRE_EQ(fn(42), 41);
 }
@@ -102,7 +102,6 @@ TEST_CASE("function call, callee generated first") {
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntVoidFn>(1);
   REQUIRE_EQ(fn(), 42);
 }
@@ -126,32 +125,57 @@ TEST_CASE("function call, caller generated first") {
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntVoidFn>(1);
   REQUIRE_EQ(fn(), 42);
 }
 
-TEST_CASE("if else") {
+TEST_CASE("block") {
   WasmCompiler cc(1);
   std::vector<WasmValueType> params = {WasmValueType::I32};
   cc.StartFunction(0, WasmValueType::I32, params);
+  cc.StartBlock({}, 1);
   cc.LocalGet(0);
-  cc.I32Const(0);
-  cc.Gts();
-  cc.StartBlock(WasmValueType::I32);
-  cc.StartBlock(WasmValueType::I32);
-  cc.BrIfz(3);
-  cc.I32Const(1);
-  cc.Br(2);
-  cc.EndBlock();
-  cc.I32Const(2);
   cc.EndBlock();
   cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   cc.dump();
   auto fn = cc.getEntry<IntIntFn>(0);
-  REQUIRE_EQ(fn(0), 2);
-  REQUIRE_EQ(fn(1), 1);
+  std::cout << fn(42) << std::endl;
+  REQUIRE_EQ(fn(42), 42);
 }
 
+TEST_CASE("block with input") {
+  WasmCompiler cc(1);
+  std::vector<WasmValueType> params = {WasmValueType::I32};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.LocalGet(0);
+  cc.StartBlock(1, 1);
+  cc.LocalGet(0);
+  cc.Add();
+  cc.EndBlock();
+  cc.Return(WasmValueType::I32);
+  cc.EndFunction();
+  cc.finalize();
+  auto fn = cc.getEntry<IntIntFn>(0);
+  std::cout << fn(42) << std::endl;
+  REQUIRE(fn(42) == 83);
+}
+
+TEST_CASE("block br_if") {
+  WasmCompiler cc(1);
+  std::vector<WasmValueType> params = {WasmValueType::I32};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.StartBlock({}, 1);
+  cc.LocalGet(0);
+  cc.BrIfz(1);
+  cc.I32Const(100);
+  cc.EndBlock();
+  cc.Return(WasmValueType::I32);
+  cc.EndFunction();
+  cc.finalize();
+  auto fn = cc.getEntry<IntIntFn>(0);
+  REQUIRE_EQ(fn(0), 0);
+  REQUIRE_EQ(fn(42), 100);
+  REQUIRE_EQ(fn(42), 42);
+}

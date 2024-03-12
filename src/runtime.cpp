@@ -100,10 +100,6 @@ int runWasm(std::string_view fileName) {
         // If else statements are a shorthand for block/block/br_if
         auto type = static_cast<WasmValueType>(reader.read<u8>());
         depth += 2;
-        compiler.StartBlock(type);
-        compiler.StartBlock(type);
-        compiler.BrIfnz(depth);
-        break;
       }
       case WasmOpcode::ELSE: {
         // else can only exist when prev block was an if, so emit code here to
@@ -127,9 +123,8 @@ int runWasm(std::string_view fileName) {
   end:
     compiler.EndFunction();
   }
-  auto entry = compiler.finalize();
   compiler.dump();
-  return entry();
+  return 0;
 }
 
 

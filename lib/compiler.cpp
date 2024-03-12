@@ -8,7 +8,6 @@ using namespace asmjit;
 
 namespace wasmjit {
 
-
 OperandStack::OperandStack() {}
 
 void OperandStack::push(x86::Gp reg) { stack.push_back(reg); }
@@ -31,8 +30,20 @@ bool OperandStack::empty() const { return stack.empty(); }
 
 std::size_t OperandStack::size() { return stack.size(); }
 
-void BlockManager::pushBlock(u32 resultArity) {
-  blocks.push_back({Label(), OperandStack(), resultArity});
+void OperandStack::initFrom(OperandStack &other, u32 in) {
+  stack.resize(in);
+  std::copy(other.stack.end() - in, other.stack.end(), stack.begin());
+  other.stack.resize(other.size() - in);
+}
+
+void OperandStack::merge(OperandStack &other, u32 count) {
+  stack.insert(stack.end(), other.stack.end() - count, other.stack.end());
+}
+
+
+
+void BlockManager::pushBlock() {
+  blocks.push_back({{}, {}, {}, 0});
   activeBlock++;
 }
 void BlockManager::popBlock() {
@@ -44,6 +55,12 @@ void BlockManager::popBlock() {
 BlockState &BlockManager::getActive() {
   assert(!empty() && "BlockManager::getActive() called on empty stack");
   return blocks[activeBlock];
+}
+
+BlockState &BlockManager::getParent() {
+  assert(activeBlock > 0 &&
+         "BlockManager::getParent() called on invalid stack");
+  return blocks[activeBlock - 1];
 }
 
 BlockState &BlockManager::getRelative(i32 depth) {
@@ -58,8 +75,6 @@ void BlockManager::initFromRelative(i32 depth) {
   blocks[activeBlock].stack = blocks[activeBlock - depth].stack;
 }
 
-void BlockManager::pushOp(x86::Gp reg) { blocks[activeBlock].stack.push(reg); }
-x86::Gp BlockManager::popOp() { return blocks[activeBlock].stack.pop(); }
 
 bool BlockManager::stackEmpty() const {
   return blocks[activeBlock].stack.empty();
@@ -116,10 +131,11 @@ x86::Gp WasmCompiler::createReg(WasmValueType type) {
   }
 }
 
-
 void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
                                  std::span<WasmValueType> params) {
-  blockMngr.pushBlock(1);
+  blockMngr.pushBlock();
+  auto& block = blockMngr.getActive();
+  block.outArity = 1;
   FuncSignature sig;
   sig.setRet(WasmTtoJitT(retType));
   for (auto param : params) {
@@ -129,16 +145,15 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
   auto funcNode = cc.addFunc(sig);
   funcNode->frame().setPreservedFP();
   cc.bind(fnLabels[index]);
-  locals.reserve(params.size());
+  block.locals.reserve(params.size());
   for (u32 i = 0; i < params.size(); i++) {
-    locals.push_back(createReg(params[i]));
-    funcNode->setArg(i, locals.back());
+    block.locals.push_back(createReg(params[i]));
+    funcNode->setArg(i, block.locals.back());
   }
 }
 
 void WasmCompiler::EndFunction() {
   cc.endFunc();
-  locals.clear();
   assert(blockMngr.stackEmpty() && "OperandStack not empty at end of function");
   assert(blockMngr.size() == 1 && "BlockManager not empty at end of function");
   blockMngr.clear();
@@ -154,54 +169,66 @@ void WasmCompiler::Call(u32 index, WasmValueType retType,
   }
   InvokeNode *invokeNode;
   cc.invoke(&invokeNode, fnLabels[index], calleeSig);
+
+  auto& block = blockMngr.getActive();
   for (u32 i = 0; i < params.size(); i++) {
-    invokeNode->setArg(i, blockMngr.popOp());
+    invokeNode->setArg(i, block.stack.pop());
   }
   x86::Gp retReg = createReg(retType);
 
   invokeNode->setRet(0, retReg);
-  blockMngr.pushOp(retReg);
+  block.stack.push(retReg);
 }
 
 void WasmCompiler::AddLocals(std::span<WasmValueType> localTypes) {
+  auto &locals = blockMngr.getActive().locals;
   for (auto type : localTypes) {
     locals.push_back(createReg(type));
   }
 }
 
 void WasmCompiler::Return(WasmValueType type) {
+  auto& block = blockMngr.getActive();
   if (type != WasmValueType::NONE) {
-    cc.ret(blockMngr.popOp());
+    cc.ret(block.stack.pop());
   } else {
     cc.ret();
   }
 }
 
-void WasmCompiler::StartBlock(WasmValueType retType) {
-  auto reg = createReg(retType);
-  blockMngr.pushOp(reg);
-  blockMngr.pushBlock(1);
+void WasmCompiler::StartBlock(u32 in, u32 out) {
+  blockMngr.pushBlock();
+  auto &block = blockMngr.getActive();
+  auto &parent = blockMngr.getParent();
+  block.label = cc.newLabel();
+  block.locals = parent.locals;
+  block.outArity = out;
+  block.stack.initFrom(parent.stack, in);
 }
 
 void WasmCompiler::EndBlock() {
   BlockState &block = blockMngr.getActive();
+  BlockState &parent = blockMngr.getParent();
+  parent.stack.merge(block.stack, block.outArity);
   cc.bind(block.label);
   blockMngr.popBlock();
 }
 
 void WasmCompiler::BrIfz(i32 depth) {
-  auto reg = blockMngr.popOp();
+  auto& block = blockMngr.getActive();
+  auto reg = block.stack.pop();
   cc.test(reg, reg);
 
-  BlockState &block = blockMngr.getRelative(depth - 1);
-  cc.jz(block.label);
+  BlockState &parent = blockMngr.getRelative(depth - 1);
+  cc.jz(parent.label);
 }
 
 void WasmCompiler::BrIfnz(i32 depth) {
-  auto reg = blockMngr.popOp();
+  auto& block = blockMngr.getActive();
+  auto reg = block.stack.pop();
   cc.test(reg, reg);
 
-  BlockState &block = blockMngr.getRelative(depth - 1);
+  BlockState &parent = blockMngr.getRelative(depth - 1);
   cc.jnz(block.label);
 }
 
@@ -211,9 +238,10 @@ void WasmCompiler::Br(i32 depth) {
 }
 
 void WasmCompiler::I32Const(i32 value) {
+  auto& block = blockMngr.getActive();
   auto reg = createReg(WasmValueType::I32);
   cc.mov(reg, value);
-  blockMngr.pushOp(reg);
+  block.stack.push(reg);
 }
 
 void WasmCompiler::_I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs) {
@@ -225,28 +253,34 @@ void WasmCompiler::_I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs) {
 }
 
 void WasmCompiler::Add() {
+  auto& block = blockMngr.getActive();
   x86::Gp dst = createReg(WasmValueType::I32);
-  x86::Gp lhs = blockMngr.popOp();
-  x86::Gp rhs = blockMngr.popOp();
+  x86::Gp lhs = block.stack.pop();
+  x86::Gp rhs = block.stack.pop();
   _I32Add(dst, lhs, rhs);
-  blockMngr.pushOp(dst);
+  block.stack.push(dst);
 }
 
-void WasmCompiler::LocalGet(u32 index) { blockMngr.pushOp(locals[index]); }
+void WasmCompiler::LocalGet(u32 index) {
+  auto &block = blockMngr.getActive();
+  block.stack.push(block.locals[index]);
+}
 
 void WasmCompiler::LocalSet(u32 index) {
-  auto reg = blockMngr.popOp();
-  cc.mov(locals[index], reg);
+  auto &block = blockMngr.getActive();
+  auto reg = block.stack.pop();
+  cc.mov(block.locals[index], reg);
 }
 
 void WasmCompiler::Gts() {
+  auto& block = blockMngr.getActive();
   x86::Gp dst = cc.newInt32();
-  x86::Gp lhs = blockMngr.popOp();
-  x86::Gp rhs = blockMngr.popOp();
+  x86::Gp lhs = block.stack.pop();
+  x86::Gp rhs = block.stack.pop();
   cc.cmp(lhs, rhs);
   cc.setg(dst.r8());
   cc.movzx(dst, dst.r8());
-  blockMngr.pushOp(dst);
+  block.stack.push(dst);
 }
 
 void WasmCompiler::finalize() {
