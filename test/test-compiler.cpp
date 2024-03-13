@@ -20,7 +20,6 @@ TEST_CASE("return 1") {
   WasmCompiler cc(1);
   cc.StartFunction(0, WasmValueType::I32, {});
   cc.I32Const(1);
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   cc.dump();
@@ -34,7 +33,6 @@ TEST_CASE("return param") {
   std::vector<WasmValueType> params = {WasmValueType::I32};
   cc.StartFunction(0, WasmValueType::I32, params);
   cc.LocalGet(0);
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntIntFn>(0);
@@ -48,7 +46,6 @@ TEST_CASE("basic add") {
   cc.LocalGet(0);
   cc.LocalGet(1);
   cc.Add();
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntIntIntFn>(0);
@@ -64,7 +61,6 @@ TEST_CASE("add and add const") {
   cc.Add();
   cc.LocalGet(1);
   cc.Add();
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntIntIntFn>(0);
@@ -78,7 +74,6 @@ TEST_CASE("decrement") {
   cc.LocalGet(0);
   cc.I32Const(-1);
   cc.Add();
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntIntFn>(0);
@@ -93,13 +88,11 @@ TEST_CASE("function call, callee generated first") {
   cc.LocalGet(0);
   cc.I32Const(1);
   cc.Add();
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   // call increment one
   cc.StartFunction(1, WasmValueType::I32, {});
   cc.I32Const(41);
   cc.Call(0, WasmValueType::I32, params);
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntVoidFn>(1);
@@ -115,14 +108,12 @@ TEST_CASE("function call, caller generated first") {
   cc.StartFunction(1, WasmValueType::I32, {});
   cc.I32Const(41);
   cc.Call(0, WasmValueType::I32, params);
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   // increment one
   cc.StartFunction(0, WasmValueType::I32, params);
   cc.LocalGet(0);
   cc.I32Const(1);
   cc.Add();
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntVoidFn>(1);
@@ -136,7 +127,6 @@ TEST_CASE("block") {
   cc.StartBlock({}, 1);
   cc.LocalGet(0);
   cc.EndBlock();
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   cc.dump();
@@ -154,7 +144,6 @@ TEST_CASE("block with input") {
   cc.LocalGet(0);
   cc.Add();
   cc.EndBlock();
-  cc.Return(WasmValueType::I32);
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntIntFn>(0);
@@ -184,8 +173,36 @@ TEST_CASE("block br_if") {
    * moving one stack slot into a new register
    * (probably both stack slots since the local can be used after the block)
    * and then also do a control merge at the end of the block
-   * TODO: deduplication and merge
+   * After dedup and merge:
+   * //////////////////
+   * test edi, edi
+   * jz L3
+   * mov eax, 100
+   * lea eax, [eax+edi]
+   * mov edi, eax
+   * L3:
+   * mov eax, edi
+   * //////////////////
    */
+  cc.StartBlock({}, 1);
+  cc.LocalGet(0);
+  cc.LocalGet(0);
+  cc.BrIfz(0);
+  cc.I32Const(100);
+  cc.Add();
+  cc.EndBlock();
+  cc.EndFunction();
+  cc.finalize();
+  cc.dump();
+  auto fn = cc.getEntry<IntIntFn>(0);
+  REQUIRE_EQ(fn(0), 0);
+  REQUIRE_EQ(fn(42), 142);
+}
+
+TEST_CASE("block br_if end of function") {
+  WasmCompiler cc(1);
+  std::vector<WasmValueType> params = {WasmValueType::I32};
+  cc.StartFunction(0, WasmValueType::I32, params);
   cc.StartBlock({}, 1);
   cc.LocalGet(0);
   cc.LocalGet(0);
@@ -193,11 +210,13 @@ TEST_CASE("block br_if") {
   cc.I32Const(100);
   cc.Add();
   cc.EndBlock();
-  cc.Return(WasmValueType::I32);
+  cc.I32Const(1000);
+  cc.Add();
   cc.EndFunction();
   cc.finalize();
   cc.dump();
   auto fn = cc.getEntry<IntIntFn>(0);
   REQUIRE_EQ(fn(0), 0);
-  REQUIRE_EQ(fn(42), 142);
+  REQUIRE_EQ(fn(42), 1142);
+
 }

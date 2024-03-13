@@ -22,11 +22,15 @@ public:
 
   bool empty() const;
   std::size_t size();
+  void deduplicate(x86::Compiler &cc);
   void initFrom(OperandStack &other, u32 in);
-  void merge(OperandStack& other, u32 count);
+  void transferFrom(x86::Compiler &cc, OperandStack &other, u64 count);
+  void freeze();
+  void unfreeze();
 
 private:
   std::vector<x86::Gp> stack;
+  i64 frozenIdx;
 };
 
 struct BlockState {
@@ -44,6 +48,7 @@ public:
   BlockState &getActive();
   BlockState &getParent();
   BlockState &getRelative(i32 depth);
+  BlockState &getByDepth(i32 depth);
   void initFromRelative(i32 depth);
 
   bool empty() const;
@@ -64,7 +69,6 @@ public:
   void EndFunction();
   void AddLocals(std::span<WasmValueType> types);
   void EndBlock();
-  void Return(WasmValueType type);
 
   void LocalGet(u32 index);
   void LocalSet(u32 index);
@@ -88,6 +92,7 @@ public:
 private:
   void _I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs);
   x86::Gp createReg(WasmValueType type);
+  WasmValueType returnType;
 
   JitRuntime runtime;
   CodeHolder code;

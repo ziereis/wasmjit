@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <span>
+#include <unordered_set>
 
 #include "compiler.hpp"
 #include "parser.hpp"
@@ -8,7 +9,7 @@ using namespace asmjit;
 
 namespace wasmjit {
 
-OperandStack::OperandStack() {}
+OperandStack::OperandStack() : frozenIdx(-1) {}
 
 void OperandStack::push(x86::Gp reg) { stack.push_back(reg); }
 
@@ -36,10 +37,51 @@ void OperandStack::initFrom(OperandStack &other, u32 in) {
   other.stack.resize(other.size() - in);
 }
 
-void OperandStack::merge(OperandStack &other, u32 count) {
-  stack.insert(stack.end(), other.stack.end() - count, other.stack.end());
+
+void OperandStack::deduplicate(x86::Compiler &cc) {
+  std::unordered_set<u32> seen;
+  std::vector<x86::Gp> deduped;
+  deduped.reserve(stack.size());
+  for (auto reg : stack) {
+    if (seen.find(reg.id()) == seen.end()) {
+      std::cout << reg.id() << std::endl;
+      deduped.push_back(reg);
+      seen.insert(reg.id());
+    } else {
+      auto new_reg = cc.newSimilarReg(reg);
+      cc.mov(new_reg, reg);
+      deduped.push_back(new_reg);
+    }
+  }
+  stack = std::move(deduped);
 }
 
+void OperandStack::transferFrom(x86::Compiler &cc, OperandStack &other, u64 count) {
+  assert(frozenIdx != -1 && "OperandStack::transferFrom() called on unfrozen stack");
+  assert(other.size() >= count);
+  auto transferred = stack.size() - frozenIdx;
+  auto newSize =  frozenIdx + std::max(count, transferred);
+
+  stack.resize(newSize);
+  u32 i = frozenIdx;
+  u32 mergeCount = std::min(count, transferred);
+  for (; i < frozenIdx + mergeCount; i++) {
+    if (stack[i] != other.stack[i]) {
+      cc.mov(stack[i], other.stack[i]);
+    }
+  }
+  for (; i < newSize; i++) {
+    stack[i] = other.stack[i];
+  }
+}
+
+void OperandStack::freeze() {
+  frozenIdx = stack.size();
+}
+
+void OperandStack::unfreeze() {
+  frozenIdx = -1;
+}
 
 
 void BlockManager::pushBlock() {
@@ -67,6 +109,11 @@ BlockState &BlockManager::getRelative(i32 depth) {
   assert(activeBlock >= depth &&
          "BlockManager::getRelative() called with invalid depth");
   return blocks[activeBlock - depth];
+}
+
+BlockState &BlockManager::getByDepth(i32 depth) {
+  assert(depth >= 0 && depth < blocks.size());
+  return blocks[depth];
 }
 
 void BlockManager::initFromRelative(i32 depth) {
@@ -133,9 +180,22 @@ x86::Gp WasmCompiler::createReg(WasmValueType type) {
 
 void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
                                  std::span<WasmValueType> params) {
+  // this is for return
+  {
+    returnType = retType;
+    blockMngr.pushBlock();
+    auto& block = blockMngr.getActive();
+    block.outArity = 1;
+    block.label = cc.newLabel();
+    block.stack.freeze();
+    block.stack.push(cc.newInt32());
+  }
+  ///////////////
+
   blockMngr.pushBlock();
   auto& block = blockMngr.getActive();
   block.outArity = 1;
+  block.label = cc.newLabel();
   FuncSignature sig;
   sig.setRet(WasmTtoJitT(retType));
   for (auto param : params) {
@@ -152,9 +212,16 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
 }
 
 void WasmCompiler::EndFunction() {
-  cc.endFunc();
-  assert(blockMngr.stackEmpty() && "OperandStack not empty at end of function");
+  EndBlock();
   assert(blockMngr.size() == 1 && "BlockManager not empty at end of function");
+  if (returnType != WasmValueType::NONE) {
+    auto& block = blockMngr.getActive();
+    auto reg = block.stack.pop();
+    cc.ret(reg);
+  } else {
+    cc.ret();
+  }
+  cc.endFunc();
   blockMngr.clear();
 }
 
@@ -186,14 +253,6 @@ void WasmCompiler::AddLocals(std::span<WasmValueType> localTypes) {
   }
 }
 
-void WasmCompiler::Return(WasmValueType type) {
-  auto& block = blockMngr.getActive();
-  if (type != WasmValueType::NONE) {
-    cc.ret(block.stack.pop());
-  } else {
-    cc.ret();
-  }
-}
 
 void WasmCompiler::StartBlock(u32 in, u32 out) {
   blockMngr.pushBlock();
@@ -203,26 +262,49 @@ void WasmCompiler::StartBlock(u32 in, u32 out) {
   block.locals = parent.locals;
   block.outArity = out;
   block.stack.initFrom(parent.stack, in);
+  parent.stack.freeze();
+  parent.stack.push(cc.newInt32());
 }
 
 void WasmCompiler::EndBlock() {
   BlockState &block = blockMngr.getActive();
+  assert(blockMngr.size() >= 1 && "EndBlock called on empty block stack");
   BlockState &parent = blockMngr.getParent();
-  parent.stack.merge(block.stack, block.outArity);
+  parent.stack.transferFrom(cc, block.stack, block.outArity);
+  parent.stack.unfreeze();
   cc.bind(block.label);
   blockMngr.popBlock();
 }
 
+/*
+ * br_if specifies a block as branch target relative to the current block
+ * so depth 0 means jump to the end of the current block (or to the start for loops)
+ * 1 -> one level outwards and so on
+ *
+ * the stack state (top x elements depending on outArity) after generating the branch
+ * has to be transferred to the block at depth + 1
+ */
 void WasmCompiler::BrIfz(i32 depth) {
-  auto& block = blockMngr.getActive();
-  auto reg = block.stack.pop();
+
+  Label noBreak = cc.newLabel();
+  auto& currentBlock = blockMngr.getActive();
+  auto reg = currentBlock.stack.pop();
   cc.test(reg, reg);
 
-  BlockState &parent = blockMngr.getRelative(depth - 1);
-  cc.jz(parent.label);
+  cc.jnz(noBreak);
+
+
+ // currentBlock.stack.deduplicate(cc);
+  auto& targetBlock = blockMngr.getRelative(depth);
+  auto& transferBlock = blockMngr.getRelative(depth + 1);
+  assert(targetBlock.label.isValid() && "Invalid target block label");
+  transferBlock.stack.transferFrom(cc, currentBlock.stack, currentBlock.outArity);
+  cc.jmp(targetBlock.label);
+  cc.bind(noBreak);
 }
 
 void WasmCompiler::BrIfnz(i32 depth) {
+  assert (false && "Not implemented");
   auto& block = blockMngr.getActive();
   auto reg = block.stack.pop();
   cc.test(reg, reg);
@@ -254,8 +336,8 @@ void WasmCompiler::_I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs) {
 void WasmCompiler::Add() {
   auto& block = blockMngr.getActive();
   x86::Gp dst = createReg(WasmValueType::I32);
-  x86::Gp lhs = block.stack.pop();
   x86::Gp rhs = block.stack.pop();
+  x86::Gp lhs = block.stack.pop();
   _I32Add(dst, lhs, rhs);
   block.stack.push(dst);
 }
