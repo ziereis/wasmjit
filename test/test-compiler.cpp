@@ -2,9 +2,17 @@
 // Created by ziereis on 10.03.24.
 //
 
+#include "asmjit/core/codeholder.h"
+#include "asmjit/core/func.h"
+#include "asmjit/core/jitruntime.h"
+#include "asmjit/core/type.h"
+#include "asmjit/x86/x86compiler.h"
 #include "doctest.h"
 #include "lib/compiler.hpp"
+#include "lib/parser.hpp"
+#include <functional>
 #include <iostream>
+#include <vector>
 
 
 using namespace wasmjit;
@@ -15,6 +23,45 @@ using IntIntIntFn = int (*)(int, int);
 
 
 
+TEST_CASE("asmjit") {
+  JitRuntime rt;
+  CodeHolder code;
+  StringLogger logger;
+  code.setLogger(&logger);
+
+  code.init(rt.environment(), rt.cpuFeatures());
+
+  x86::Compiler c(&code);
+
+  FuncSignature sig;
+  sig.setRet(TypeId::kInt32);
+  sig.addArg(TypeId::kInt32);
+  sig.addArg(TypeId::kInt32);
+  auto fn = c.addFunc(sig);
+    x86::Gp left = c.newInt32("left");
+    x86::Gp right = c.newInt32("right");
+
+    fn->setArg(0, left);
+    fn->setArg(1, right);
+    c.cmp(left, right);
+
+    x86::Gp result = c.newInt32("result");
+
+    c.setg(x86::cl);
+    c.movzx(result, x86::cl);
+
+    c.ret(result);
+
+    c.endFunc();
+
+    c.finalize();
+
+    IntIntIntFn fnPtr;
+
+    rt.add(&fnPtr, &code);
+
+  std::cout << logger.data() << std::endl;
+}
 
 TEST_CASE("return 1") {
   WasmCompiler cc(1);
@@ -22,7 +69,6 @@ TEST_CASE("return 1") {
   cc.I32Const(1);
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntVoidFn>(0);
   std::cout << fn() << std::endl;
   REQUIRE_EQ(fn(), 1);
@@ -120,6 +166,23 @@ TEST_CASE("function call, caller generated first") {
   REQUIRE_EQ(fn(), 42);
 }
 
+TEST_CASE("greater than") {
+  WasmCompiler cc(1);
+  std::vector<WasmValueType> params = {WasmValueType::I32, WasmValueType::I32};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.LocalGet(0);
+  cc.LocalGet(1);
+  cc.Gts();
+  cc.EndFunction();
+  cc.finalize();
+  cc.dump();
+  auto fn = cc.getEntry<IntIntIntFn>(0);
+  std::cout << fn(1, 2) << std::endl;
+  REQUIRE_EQ(fn(1, 2), 0);
+  REQUIRE_EQ(fn(2, 1), 1);
+
+}
+
 TEST_CASE("block") {
   WasmCompiler cc(1);
   std::vector<WasmValueType> params = {WasmValueType::I32};
@@ -129,9 +192,7 @@ TEST_CASE("block") {
   cc.EndBlock();
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntIntFn>(0);
-  std::cout << fn(42) << std::endl;
   REQUIRE_EQ(fn(42), 42);
 }
 
@@ -147,7 +208,6 @@ TEST_CASE("block with input") {
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntIntFn>(0);
-  std::cout << fn(42) << std::endl;
   REQUIRE_EQ(fn(42), 84);
 }
 
@@ -193,7 +253,6 @@ TEST_CASE("block br_if") {
   cc.EndBlock();
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntIntFn>(0);
   REQUIRE_EQ(fn(0), 0);
   REQUIRE_EQ(fn(42), 142);
@@ -214,9 +273,17 @@ TEST_CASE("block br_if end of function") {
   cc.Add();
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntIntFn>(0);
   REQUIRE_EQ(fn(0), 0);
   REQUIRE_EQ(fn(42), 1142);
-
 }
+
+// TEST_CASE("nested block") {
+//   WasmCompiler cc(1);
+//   std::vector<WasmValueType> params = {WasmValueType::I32};
+//   cc.StartFunction(0, WasmValueType::I32, params);
+//   cc.StartBlock({}, 1);
+//   cc.LocalGet(0);
+//   cc.LocalGet(0);
+//   cc.
+// }

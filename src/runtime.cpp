@@ -59,7 +59,6 @@ int runWasm(std::string_view fileName) {
       switch (op) {
       case WasmOpcode::END: {
         if (depth == 0) {
-          compiler.Return(signature.returnType);
           goto end;
         } else {
           compiler.EndBlock();

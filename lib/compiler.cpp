@@ -188,7 +188,7 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
     block.outArity = 1;
     block.label = cc.newLabel();
     block.stack.freeze();
-    block.stack.push(cc.newInt32());
+    //block.stack.push(cc.newInt32());
   }
   ///////////////
 
@@ -355,12 +355,12 @@ void WasmCompiler::LocalSet(u32 index) {
 
 void WasmCompiler::Gts() {
   auto& block = blockMngr.getActive();
-  x86::Gp dst = cc.newInt32();
-  x86::Gp lhs = block.stack.pop();
   x86::Gp rhs = block.stack.pop();
+  x86::Gp lhs = block.stack.pop();
   cc.cmp(lhs, rhs);
-  cc.setg(dst.r8());
-  cc.movzx(dst, dst.r8());
+  x86::Gp dst = cc.newInt32();
+  cc.setg(x86::cl);
+  cc.movzx(dst, x86::cl);
   block.stack.push(dst);
 }
 
