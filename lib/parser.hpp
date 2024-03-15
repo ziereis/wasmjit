@@ -1,5 +1,6 @@
 #pragma once
 
+#include <charconv>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -166,6 +167,30 @@ public:
   std::span<ImportedName> importedNames;
 };
 
+struct WasmLimit {
+  u32 minSize = 0;
+  u32 maxSize;
+
+  void parse(BinaryReader &reader);
+  void dump() const;
+};
+
+std::string_view toString(WasmLimit limit);
+
+struct TableSection : NonMoveable, NonCopyable {
+  void parseSection(BinaryReader &reader);
+  void dump() const;
+
+  std::optional<WasmLimit> limit;
+};
+
+struct MemorySection : NonMoveable, NonCopyable {
+  void parseSection(BinaryReader &reader);
+  void dump() const;
+
+  std::optional<WasmLimit> limit;
+};
+
 struct CodeSection : NonMoveable, NonCopyable {
 
   void dump() const;
@@ -183,6 +208,8 @@ struct WasmModule : NonCopyable, NonMoveable {
   FunctionSection functionSection;
   ExportSection exportSection;
   ImportSection importSection;
+  TableSection tableSection;
+  MemorySection memorySection;
   CodeSection codeSection;
 };
 

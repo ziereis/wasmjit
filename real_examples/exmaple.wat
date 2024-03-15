@@ -8,12 +8,16 @@
     (local i32)
     block  ;; label = @1
       block  ;; label = @2
-        i32.const 0
-        i32.load offset=1024
+        global.get $GOT.data.internal.__memory_base
+        i32.const 1024
+        i32.add
+        i32.load
         br_if 0 (;@2;)
-        i32.const 0
+        global.get $GOT.data.internal.__memory_base
+        i32.const 1024
+        i32.add
         i32.const 1
-        i32.store offset=1024
+        i32.store
         call $__wasm_call_ctors
         call $__original_main
         local.set 0
@@ -41,5 +45,6 @@
   (table (;0;) 1 1 funcref)
   (memory (;0;) 2)
   (global $__stack_pointer (mut i32) (i32.const 66576))
+  (global $GOT.data.internal.__memory_base i32 (i32.const 0))
   (export "memory" (memory 0))
   (export "_start" (func $_start)))

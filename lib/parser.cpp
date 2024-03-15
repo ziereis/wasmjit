@@ -1,7 +1,10 @@
 #include <cassert>
+#include <limits>
 #include <string_view>
 #include <iostream>
 
+#include "asmjit/arm/armoperand.h"
+#include "lib/tz-utils.hpp"
 #include "parser.hpp"
 using namespace std::literals;
 
@@ -167,6 +170,7 @@ void TypeSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
 
 void FunctionSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
   auto count = reader.readIntLeb<u32>();
+  LOG_DEBUG("Function count: {}", count);
   functions = alloc.constructSpan<u32[]>(count);
   for (auto &index : functions) {
     index = reader.readIntLeb<u32>();
@@ -213,6 +217,40 @@ void ImportSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
   }
 }
 
+void WasmLimit::parse(BinaryReader &reader) {
+  auto flags = reader.readIntLeb<u32>();
+  minSize = reader.readIntLeb<u32>();
+  WASM_VALIDATE(flags == 0 || flags == 1, "Invalid limit flags");
+  if (flags == 0) {
+    maxSize = std::numeric_limits<u32>::max();
+  } else {
+    maxSize = reader.readIntLeb<u32>();
+  }
+}
+
+
+void TableSection::parseSection(BinaryReader &reader) {
+  auto count = reader.readIntLeb<u32>();
+  WASM_VALIDATE(count == 1, "Only one table is supported");
+  for (u32 i = 0; i < count; i++) {
+    auto elementType = reader.read<u8>();
+    WASM_VALIDATE(elementType == 0x70, "Invalid table element type");
+    WasmLimit lim;
+    lim.parse(reader);
+    limit = lim;
+  }
+}
+
+void MemorySection::parseSection(BinaryReader &reader) {
+  auto count = reader.readIntLeb<u32>();
+  WASM_VALIDATE(count == 1, "Only one memory is supported");
+  for (u32 i = 0; i < count; i++) {
+    WasmLimit lim;
+    lim.parse(reader);
+    limit = lim;
+  }
+}
+
 
 void FunctionPrototype::dump() const {
   std::cout << "FunctionPrototype: (";
@@ -256,6 +294,32 @@ void ImportSection::dump() const {
   }
 }
 
+void WasmLimit::dump() const {
+  if (maxSize == std::numeric_limits<u32>::max())
+    std::cout << "WasmLimit: " << minSize << " " << "inf" << std::endl;
+  else
+    std::cout << "WasmLimit: " << minSize << " " << maxSize << std::endl;
+}
+
+void TableSection::dump() const {
+  if (limit.has_value()) {
+    std::cout << "TableSection: ";
+    limit.value().dump();
+  } else {
+    std::cout << "TableSection: empty" << std::endl;
+  }
+}
+
+void MemorySection::dump() const {
+  if (limit.has_value()) {
+    std::cout << "MemorySection: ";
+    limit.value().dump();
+  } else {
+    std::cout << "MemorySection: empty" << std::endl;
+  }
+
+}
+
 FunctionPrototype &WasmModule::getPrototype(u32 index) const {
   u32 typeIdx = functionSection.functions[index];
   return typeSection.types[typeIdx];
@@ -276,8 +340,9 @@ void WasmModule::parseSections(std::span<const u8> wasmFile) {
     WASM_VALIDATE(sectionId != static_cast<u8>(WasmSection::CUSTOM_SECTION),
                   "Custom sections are not supported");
     auto sectionSize = reader.readIntLeb<u32>();
-    // std::cout << "Section: " << toString(static_cast<WasmSection>(sectionId))
-    //           << " size: " << std::to_string(sectionSize) << std::endl;
+
+    LOG_DEBUG("Section: {} size: {}", toString(static_cast<WasmSection>(sectionId)), sectionSize);
+
     switch (static_cast<WasmSection>(sectionId)) {
     case WasmSection::TYPE_SECTION:
       typeSection.parseSection(allocator, reader);
@@ -292,8 +357,12 @@ void WasmModule::parseSections(std::span<const u8> wasmFile) {
       functionSection.dump();
       break;
     case WasmSection::TABLE_SECTION:
+      tableSection.parseSection(reader);
+      tableSection.dump();
       break;
     case WasmSection::MEMORY_SECTION:
+      memorySection.parseSection(reader);
+      memorySection.dump();
       break;
     case WasmSection::GLOBAL_SECTION:
       break;
