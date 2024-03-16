@@ -1,16 +1,12 @@
 #pragma once
 
-#include <charconv>
 #include <cstdint>
 #include <optional>
-#include <stdexcept>
 #include <string_view>
 
 #include "ArenaAllocator.hpp"
-#include "asmjit/asmjit.h"
 #include "tz-utils.hpp"
 
-using namespace asmjit;
 
 using ArenaAllocator = DynamicArenaAllocator<1024 * 4>;
 
@@ -117,7 +113,6 @@ struct FunctionPrototype : NonCopyable, NonMoveable {
 
   std::span<WasmValueType> paramTypes;
   WasmValueType returnType;
-  std::optional<Label> label;
 };
 
 struct TypeSection : NonCopyable, NonMoveable {
@@ -150,7 +145,7 @@ struct ExportSection : NonCopyable, NonMoveable {
   std::span<ExportEntity> exports;
 };
 
-struct ImportedName : NonMoveable, NonCopyable {
+struct ImportedName {
   std::string_view l1Name;
   std::string_view l2Name;
 
@@ -158,13 +153,13 @@ struct ImportedName : NonMoveable, NonCopyable {
   void dump() const;
 };
 
-struct ImportSection : NonMoveable, NonCopyable {
-public:
-  void parseSection(ArenaAllocator &alloc, BinaryReader &reader);
+struct WasmGlobal {
+  void parse(BinaryReader &reader);
   void dump() const;
 
-  std::span<u32> importedFunctions;
-  std::span<ImportedName> importedNames;
+
+  WasmValueType type;
+  bool isMutable;
 };
 
 struct WasmLimit {
@@ -174,6 +169,31 @@ struct WasmLimit {
   void parse(BinaryReader &reader);
   void dump() const;
 };
+
+struct ImportSection : NonMoveable, NonCopyable {
+public:
+  using import_t = std::variant<u32, WasmGlobal>;
+  void parseSection(ArenaAllocator &alloc, BinaryReader &reader);
+
+  ImportedName getFnName(u32 index) const;
+  u32 getFnType(std::string_view name) const;
+  ImportedName getGlobalName(u32 index) const;
+  WasmGlobal getGlobalType(std::string_view name) const;
+
+  void dump() const;
+
+  u32 numImportedFuncs;
+  u32 numImportedGlobals;
+  std::span<import_t> imports;
+  std::span<ImportedName> importedNames;
+  // indices into the imports/names
+  std::span<u32> importedFunctions;
+  std::span<u32> importedGlobals;
+  // limit and idx to name
+  std::optional<std::pair<WasmLimit, u32>> importedTableLimit;
+  std::optional<std::pair<WasmLimit, u32>> importedMemoryLimit;
+};
+
 
 std::string_view toString(WasmLimit limit);
 
@@ -190,6 +210,25 @@ struct MemorySection : NonMoveable, NonCopyable {
 
   std::optional<WasmLimit> limit;
 };
+
+using value_t = std::variant<u32, i32, u64, i64, f32, f64>;
+
+struct WasmConstExpr {
+  void parse(BinaryReader &reader);
+  void dump() const;
+
+  bool isInitByGlobal;
+  value_t value;
+};
+
+struct GlobalSection : NonMoveable, NonCopyable {
+  void parseSection(ArenaAllocator& alloc, BinaryReader &reader);
+  void dump() const;
+
+  std::span<WasmGlobal> globals;
+  std::span<WasmConstExpr> initExprs;
+};
+
 
 struct CodeSection : NonMoveable, NonCopyable {
 
@@ -210,6 +249,7 @@ struct WasmModule : NonCopyable, NonMoveable {
   ImportSection importSection;
   TableSection tableSection;
   MemorySection memorySection;
+  GlobalSection globalSection;
   CodeSection codeSection;
 };
 

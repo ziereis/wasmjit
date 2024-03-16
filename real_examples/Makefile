@@ -1,4 +1,4 @@
-CC = wasi-sdk-21.0/bin/clang
+CC = wasi-sdk-17.0/bin/clang
 CFLAGS = -O1
 
 SRC_FILES := $(wildcard *.c)

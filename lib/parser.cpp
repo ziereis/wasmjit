@@ -1,10 +1,13 @@
 #include <cassert>
+#include <cstdint>
+#include <format>
 #include <limits>
+#include <span>
 #include <string_view>
 #include <iostream>
-
-#include "asmjit/arm/armoperand.h"
-#include "lib/tz-utils.hpp"
+#include <variant>
+#include "tz-utils.hpp"
+#include "wasm-types.hpp"
 #include "parser.hpp"
 using namespace std::literals;
 
@@ -204,17 +207,56 @@ void ImportedName::parse(ArenaAllocator &alloc, BinaryReader &reader) {
                               strMem2.size());
 }
 
+void WasmGlobal::parse(BinaryReader &reader) {
+  type = static_cast<WasmValueType>(reader.read<u8>());
+  u8 mut = reader.read<u8>();
+  WASM_VALIDATE(mut == 0 || mut == 1, "Global mutability must be 0 or 1");
+  isMutable = mut;
+}
+
 void ImportSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
   auto count = reader.readIntLeb<u32>();
-  importedFunctions = alloc.constructSpan<u32[]>(count);
-  importedNames = alloc.constructSpan<ImportedName[]>(count);
+  numImportedFuncs = 0;
+  numImportedGlobals = 0;
+  imports = alloc.constructSpan<import_t>(count);
+  importedFunctions = alloc.constructSpan<u32>(count);
+  importedGlobals = alloc.constructSpan<u32>(count);
+  importedNames = alloc.constructSpan<ImportedName>(count);
   for (u32 i = 0; i < count; i++) {
     importedNames[i].parse(alloc, reader);
     u8 importType = reader.read<u8>();
     WASM_VALIDATE(importType == static_cast<u8>(ImportType::FUNCTION),
                   "Only function imports are supported");
-    importedFunctions[i] = reader.readIntLeb<u32>();
+    // TODO: terrible change to enum with switch
+    if (importType == 0) {
+      imports[i] = u32{0};
+      imports[i] = reader.readIntLeb<u32>();
+      importedFunctions[numImportedFuncs] = i;
+      numImportedFuncs++;
+    } else if (importType == 3) {
+      std::get<WasmGlobal>(imports[i]).parse(reader);
+      importedGlobals[numImportedGlobals] = i;
+      numImportedGlobals++;
+    } else if (importType == 1) {
+      assert(importedTableLimit.has_value() == false);
+      WasmLimit lim;
+      lim.parse(reader);
+      importedTableLimit = {lim, i};
+    } else if (importType == 2) {
+      assert(importedMemoryLimit.has_value() == false);
+      WasmLimit lim;
+      lim.parse(reader);
+      importedMemoryLimit = {lim, i};
+    } else {
+      WASM_VALIDATE(false, "Invalid import type");
+    }
   }
+  importedFunctions = importedFunctions.subspan(0, numImportedFuncs);
+  importedGlobals = importedGlobals.subspan(0, numImportedGlobals);
+}
+
+ImportedName ImportSection::getFnName(u32 index) const {
+  return importedNames[importedFunctions[index]];
 }
 
 void WasmLimit::parse(BinaryReader &reader) {
@@ -251,6 +293,43 @@ void MemorySection::parseSection(BinaryReader &reader) {
   }
 }
 
+void WasmConstExpr::parse(BinaryReader &reader) {
+  auto opcode = static_cast<WasmOpcode>(reader.read<u8>());
+  isInitByGlobal = false;
+  switch (opcode) {
+  case WasmOpcode::GLOBAL_GET:
+    value = reader.readIntLeb<u32>();
+    isInitByGlobal = true;
+    break;
+  case WasmOpcode::I32_CONST:
+    value = reader.readIntLeb<i32>();
+    break;
+  case WasmOpcode::I64_CONST:
+    value = reader.readIntLeb<i64>();
+    break;
+  case WasmOpcode::F32_CONST:
+    value = reader.read<f32>();
+    break;
+  case WasmOpcode::F64_CONST:
+    value = reader.read<f64>();
+    break;
+  default:
+    WASM_VALIDATE(false, "Invalid opcode");
+  };
+
+  auto end = static_cast<WasmOpcode>(reader.read<u8>());
+  WASM_VALIDATE(end == WasmOpcode::END, "Invalid end opcode");
+}
+
+void GlobalSection::parseSection(ArenaAllocator& alloc, BinaryReader &reader) {
+  auto count = reader.readIntLeb<u32>();
+  globals = alloc.constructSpan<WasmGlobal>(count);
+  initExprs = alloc.constructSpan<WasmConstExpr>(count);
+  for (u32 i = 0; i < count; i++) {
+    globals[i].parse(reader);
+    initExprs[i].parse(reader);
+  }
+}
 
 void FunctionPrototype::dump() const {
   std::cout << "FunctionPrototype: (";
@@ -288,9 +367,27 @@ void ImportedName::dump() const {
 }
 
 void ImportSection::dump() const {
+  std::cout << "ImportSection: " << std::endl;
+  std::cout << "Num imported functions: " << numImportedFuncs << std::endl;
+  std::cout << "Num imported Globals: " << numImportedGlobals << std::endl;
   for (u32 i = 0; i < importedFunctions.size(); i++) {
-    std::cout << "Imported function: " << importedFunctions[i] << " ";
-    importedNames[i].dump();
+    importedNames[importedFunctions[i]].dump();
+    std::cout << "Fn idx: " << std::get<u32>(imports[importedFunctions[i]]) << std::endl;
+  }
+  for (u32 i = 0; i < importedGlobals.size(); i++) {
+    importedNames[importedGlobals[i]].dump();
+    std::get<WasmGlobal>(imports[importedGlobals[i]]).dump();
+  }
+
+  if (importedTableLimit.has_value()) {
+    std::cout << "Imported table limit: ";
+    importedNames[importedTableLimit.value().second].dump();
+    importedTableLimit.value().first.dump();
+  }
+  if (importedMemoryLimit.has_value()) {
+    std::cout << "Imported memory limit: ";
+    importedNames[importedMemoryLimit.value().second].dump();
+    importedMemoryLimit.value().first.dump();
   }
 }
 
@@ -317,7 +414,26 @@ void MemorySection::dump() const {
   } else {
     std::cout << "MemorySection: empty" << std::endl;
   }
+}
 
+void WasmConstExpr::dump() const {
+  if (isInitByGlobal) {
+    std::cout << std::format("WasmConstExpr: globalIdx {}\n", std::get<u32>(value));
+  } else {
+    std::visit([](auto &&arg) { std::cout << std::format("WasmConstExpr: value: {}\n", arg); }, value);
+  }
+}
+
+void WasmGlobal::dump() const {
+  std::cout << "WasmGlobal: " << toString(type) << " " << isMutable << std::endl;
+}
+
+void GlobalSection::dump() const {
+  std::cout << "GlobalSection: " << std::endl;
+  for (u32 i = 0; i < globals.size(); i++) {
+    globals[i].dump();
+    initExprs[i].dump();
+  }
 }
 
 FunctionPrototype &WasmModule::getPrototype(u32 index) const {
@@ -365,6 +481,8 @@ void WasmModule::parseSections(std::span<const u8> wasmFile) {
       memorySection.dump();
       break;
     case WasmSection::GLOBAL_SECTION:
+      globalSection.parseSection(allocator, reader);
+      globalSection.dump();
       break;
     case WasmSection::EXPORT_SECTION:
       exportSection.parseSection(allocator, reader);

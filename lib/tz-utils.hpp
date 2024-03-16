@@ -17,6 +17,8 @@ using u64 = uint64_t;
 using i8 = int8_t;
 using i32 = int32_t;
 using i64 = int64_t;
+using f32 = float;
+using f64 = double;
 
 #define LOG_DEBUG(fmt, ...)                                                    \
   std::cout << std::format(fmt, __VA_ARGS__) << std::endl
