@@ -53,6 +53,13 @@ std::span<const u8> BinaryReader::readChunk(std::size_t count) {
   return std::span<const u8>(data + pos, count);
 }
 
+void BinaryReader::advance(std::size_t count) {
+  if (pos + count > size) {
+    throw std::runtime_error("Out of data");
+  }
+  pos += count;
+}
+
 
 #define WASM_VALIDATE(COND, MSG)                                               \
   do {                                                                         \
@@ -453,8 +460,8 @@ void WasmModule::parseSections(std::span<const u8> wasmFile) {
     auto sectionId = reader.read<u8>();
     WASM_VALIDATE(sectionId < static_cast<u8>(WasmSection::SIZE),
                   "Invalid section id");
-    WASM_VALIDATE(sectionId != static_cast<u8>(WasmSection::CUSTOM_SECTION),
-                  "Custom sections are not supported");
+    // WASM_VALIDATE(sectionId != static_cast<u8>(WasmSection::CUSTOM_SECTION),
+    //               "Custom sections are not supported");
     auto sectionSize = reader.readIntLeb<u32>();
 
     LOG_DEBUG("Section: {} size: {}", toString(static_cast<WasmSection>(sectionId)), sectionSize);
@@ -497,6 +504,9 @@ void WasmModule::parseSections(std::span<const u8> wasmFile) {
       break;
     case WasmSection::DATA_SECTION:
       break;
+    case WasmSection::CUSTOM_SECTION:
+      reader.advance(sectionSize);
+      break;
     default:
       throw std::runtime_error("Invalid section id");
     }
@@ -508,6 +518,9 @@ void WasmModule::dump() const {
   importSection.dump();
   functionSection.dump();
   exportSection.dump();
+  tableSection.dump();
+  memorySection.dump();
+  globalSection.dump();
 }
 
 } // namespace wasmjit

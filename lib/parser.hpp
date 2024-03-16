@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "ArenaAllocator.hpp"
+#include "lib/wasm-types.hpp"
 #include "tz-utils.hpp"
 
 
@@ -23,6 +24,7 @@ public:
   template <typename T> T readIntLeb();
   std::string_view readStr();
   template <class T> T peek() const;
+  void advance(std::size_t count);
 
   [[nodiscard]] bool hasMore() const;
   std::span<const u8> readChunk(std::size_t count);
@@ -230,8 +232,10 @@ struct GlobalSection : NonMoveable, NonCopyable {
 };
 
 
-struct CodeSection : NonMoveable, NonCopyable {
 
+
+class CodeSection : NonMoveable, NonCopyable {
+public:
   void dump() const;
 
   std::span<const u8> code;
