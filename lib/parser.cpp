@@ -9,6 +9,7 @@
 #include "tz-utils.hpp"
 #include "wasm-types.hpp"
 #include "parser.hpp"
+#include "wasi.h"
 using namespace std::literals;
 
 
@@ -35,13 +36,6 @@ std::string_view BinaryReader::readStr() {
   return str;
 }
 
-template <class T>
-T BinaryReader::peek() const {
-  if (pos + sizeof(T) > size) {
-    throw std::runtime_error("Out of data");
-  }
-  return *reinterpret_cast<const T *>(data + pos);
-}
 
 bool BinaryReader::hasMore() const { return pos < size; }
 
@@ -49,8 +43,10 @@ std::span<const u8> BinaryReader::readChunk(std::size_t count) {
   if (pos + count > size) {
     throw std::runtime_error("Out of data");
   }
+
+  auto result = std::span<const u8>(data + pos, count);
   pos += count;
-  return std::span<const u8>(data + pos, count);
+  return result;
 }
 
 void BinaryReader::advance(std::size_t count) {
@@ -178,11 +174,21 @@ void TypeSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
   }
 }
 
-void FunctionSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
+void FunctionSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader,
+                                   ImportSection* importSection) {
+  if (importSection) {
+    numImportedFns = importSection->numImportedFuncs;
+  } else {
+    numImportedFns = 0;
+  }
   auto count = reader.readIntLeb<u32>();
+
+
   LOG_DEBUG("Function count: {}", count);
-  functions = alloc.constructSpan<u32[]>(count);
-  for (auto &index : functions) {
+  functions = alloc.constructSpan<u32>(count + numImportedFns);
+  importedFnPtrs = alloc.constructSpan<uintptr_t>(numImportedFns);
+  importSection->resolveImportedFuncs(*this);
+  for (auto &index : functions.subspan(numImportedFns)) {
     index = reader.readIntLeb<u32>();
   }
 }
@@ -260,6 +266,16 @@ void ImportSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
   }
   importedFunctions = importedFunctions.subspan(0, numImportedFuncs);
   importedGlobals = importedGlobals.subspan(0, numImportedGlobals);
+}
+
+void ImportSection::resolveImportedFuncs(FunctionSection &functionSection) {
+  for (u32 i = 0; i < numImportedFuncs; i++) {
+    auto fnIdx = std::get<u32>(imports[importedFunctions[i]]);
+    assert(importedNames[importedFunctions[i]].l1Name == "wasi_snapshot_preview1");
+
+    functionSection.functions[i] = fnIdx;
+    functionSection.importedFnPtrs[0] =  preview1::linkTable[importedNames[importedFunctions[i]].l2Name];
+  }
 }
 
 ImportedName ImportSection::getFnName(u32 index) const {
@@ -476,7 +492,7 @@ void WasmModule::parseSections(std::span<const u8> wasmFile) {
       importSection.dump();
       break;
     case WasmSection::FUNCTION_SECTION:
-      functionSection.parseSection(allocator, reader);
+      functionSection.parseSection(allocator, reader, &importSection);
       functionSection.dump();
       break;
     case WasmSection::TABLE_SECTION:

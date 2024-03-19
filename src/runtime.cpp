@@ -1,9 +1,14 @@
 #include "lib/compiler.hpp"
 #include "lib/parser.hpp"
+#include "lib/tz-utils.hpp"
 #include "lib/wasm-types.hpp"
+#include "lib/wasi.h"
+#include "runtime.hpp"
 #include <format>
 #include <new>
+#include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace wasmjit {
@@ -30,20 +35,29 @@ int runWasm(std::string_view fileName) {
   wasmModule.dump();
   auto code = wasmModule.codeSection.code;
   BinaryReader reader(code.data(), code.size());
+  LinearMemory memory;
+  memory.init(wasmModule.memorySection.limit->minSize);
 
   u32 numFuncs = reader.readIntLeb<u32>();
   LOG_DEBUG("numFuncs: {}", numFuncs);
 
-  std::vector<WasmValueType> localTypes;
-
   WasmCompiler compiler(numFuncs);
 
-  for (u32 i = 0; i < numFuncs; i++) {
+  std::vector<WasmValueType> localTypes;
+
+  std::vector<value_t> values;
+  for (auto &global : wasmModule.globalSection.initExprs) {
+    values.push_back(global.value);
+  }
+  compiler.AddGlobals(wasmModule.globalSection.globals, values);
+
+
+  for (u32 i = wasmModule.functionSection.numImportedFns; i < numFuncs; i++) {
     localTypes.clear();
 
     u32 typeIdx = wasmModule.functionSection.functions[i];
     auto &signature = wasmModule.getPrototype(i);
-    compiler.StartFunction(typeIdx, signature.returnType, signature.paramTypes);
+    compiler.StartFunction(i, signature.returnType, signature.paramTypes);
 
     u32 fnSize = reader.readIntLeb<u32>();
     LOG_DEBUG("fnSize: {}", fnSize);
@@ -66,9 +80,44 @@ int runWasm(std::string_view fileName) {
         }
         break;
       }
+      case WasmOpcode::BLOCK: {
+        u8 res = reader.read<u8>();
+        auto type = static_cast<WasmValueType>(res);
+        LOG_DEBUG("block type: {}", toString(type));
+        compiler.StartBlock(0, 0);
+        depth++;
+        break;
+      }
       case WasmOpcode::LOCAL_GET: {
         u32 localIdx = reader.readIntLeb<u32>();
         compiler.LocalGet(localIdx);
+        break;
+      }
+      case WasmOpcode::GLOBAL_GET: {
+        u32 globalIdx = reader.readIntLeb<u32>();
+
+        compiler.GlobalGet(globalIdx);
+        break;
+      }
+      case WasmOpcode::BR_IF: {
+        u32 offset = reader.readIntLeb<u32>();
+        compiler.BrIf(offset);
+        break;
+      }
+      case WasmOpcode::I32_LOAD: {
+        u32 align = reader.readIntLeb<u32>();
+        i32 offset = reader.readIntLeb<i32>();
+        assert(offset == 0);
+        std::ignore = align;
+        compiler.I32Load(reinterpret_cast<u64>(memory.mem));
+        break;
+      }
+      case WasmOpcode::I32_STORE: {
+        u32 align = reader.readIntLeb<u32>();
+        i32 offset = reader.readIntLeb<i32>();
+        assert(offset == 0);
+        std::ignore = align;
+        compiler.I32Store(reinterpret_cast<u64>(memory.mem));
         break;
       }
       case WasmOpcode::LOCAL_SET: {
@@ -95,6 +144,10 @@ int runWasm(std::string_view fileName) {
         compiler.Gts();
         break;
       }
+      case WasmOpcode::RETURN: {
+        compiler.Return();
+        break;
+      }
       case WasmOpcode::IF: {
         // If else statements are a shorthand for block/block/br_if
         auto type = static_cast<WasmValueType>(reader.read<u8>());
@@ -115,6 +168,9 @@ int runWasm(std::string_view fileName) {
         // basically a no-op
         break;
       }
+      case WasmOpcode::UNREACHABLE: {
+        break;
+      }
       default:
         throw std::runtime_error("Invalid opcode");
       }
@@ -128,5 +184,3 @@ int runWasm(std::string_view fileName) {
 
 
 } // namespace wasmjit
-
-int main() { return wasmjit::runWasm("../wasm_examples/add.wasm"); }

@@ -62,6 +62,15 @@ T BinaryReader::readIntLeb() {
 }
 
 
+template <class T>
+T BinaryReader::peek() const {
+  if (pos + sizeof(T) > size) {
+    throw std::runtime_error("Out of data");
+  }
+  return *reinterpret_cast<const T *>(data + pos);
+}
+
+
 
 enum class WasmSection {
   CUSTOM_SECTION = 0,
@@ -86,7 +95,7 @@ enum class WasmValueType : u8 {
   I64 = 0x7E,
   F32 = 0x7D,
   F64 = 0x7C,
-  NONE = 0,
+  NONE = 0x40,
 };
 
 std::string_view toString(WasmValueType type);
@@ -124,29 +133,6 @@ struct TypeSection : NonCopyable, NonMoveable {
   std::span<FunctionPrototype> types;
 };
 
-struct FunctionSection : NonCopyable, NonMoveable {
-  // TODO: missing a lot of stuff
-  void parseSection(ArenaAllocator &alloc, BinaryReader &reader);
-  void dump() const;
-
-  std::span<u32> functions;
-};
-
-struct ExportEntity : NonCopyable, NonMoveable {
-  void dump() const;
-
-  std::string_view name;
-  u32 entityIndex;
-  ExportType type;
-};
-
-struct ExportSection : NonCopyable, NonMoveable {
-  void parseSection(ArenaAllocator &alloc, BinaryReader &reader);
-  void dump() const;
-
-  std::span<ExportEntity> exports;
-};
-
 struct ImportedName {
   std::string_view l1Name;
   std::string_view l2Name;
@@ -172,10 +158,12 @@ struct WasmLimit {
   void dump() const;
 };
 
+struct FunctionSection;
 struct ImportSection : NonMoveable, NonCopyable {
 public:
   using import_t = std::variant<u32, WasmGlobal>;
   void parseSection(ArenaAllocator &alloc, BinaryReader &reader);
+  void resolveImportedFuncs(FunctionSection &functionSection);
 
   ImportedName getFnName(u32 index) const;
   u32 getFnType(std::string_view name) const;
@@ -195,6 +183,33 @@ public:
   std::optional<std::pair<WasmLimit, u32>> importedTableLimit;
   std::optional<std::pair<WasmLimit, u32>> importedMemoryLimit;
 };
+
+struct FunctionSection : NonCopyable, NonMoveable {
+  // TODO: missing a lot of stuff
+  void parseSection(ArenaAllocator &alloc, BinaryReader &reader, ImportSection* importSection);
+  void dump() const;
+
+  u32 numImportedFns;
+  std::span<uintptr_t> importedFnPtrs;
+  std::span<u32> functions;
+};
+
+struct ExportEntity : NonCopyable, NonMoveable {
+  void dump() const;
+
+  std::string_view name;
+  u32 entityIndex;
+  ExportType type;
+};
+
+struct ExportSection : NonCopyable, NonMoveable {
+  void parseSection(ArenaAllocator &alloc, BinaryReader &reader);
+  void dump() const;
+
+  std::span<ExportEntity> exports;
+};
+
+
 
 
 std::string_view toString(WasmLimit limit);
@@ -230,8 +245,6 @@ struct GlobalSection : NonMoveable, NonCopyable {
   std::span<WasmGlobal> globals;
   std::span<WasmConstExpr> initExprs;
 };
-
-
 
 
 class CodeSection : NonMoveable, NonCopyable {

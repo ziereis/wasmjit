@@ -1,8 +1,12 @@
+#include <array>
+#include <cstdint>
 #include <cstdio>
 #include <span>
 #include <unordered_set>
 
+#include "asmjit/x86/x86operand.h"
 #include "compiler.hpp"
+#include "lib/tz-utils.hpp"
 #include "parser.hpp"
 
 using namespace asmjit;
@@ -185,7 +189,7 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
     returnType = retType;
     blockMngr.pushBlock();
     auto& block = blockMngr.getActive();
-    block.outArity = 1;
+    block.outArity = retType != WasmValueType::NONE ? 1 : 0;
     block.label = cc.newLabel();
     block.stack.freeze();
     //block.stack.push(cc.newInt32());
@@ -194,7 +198,7 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
 
   blockMngr.pushBlock();
   auto& block = blockMngr.getActive();
-  block.outArity = 1;
+  block.outArity = retType != WasmValueType::NONE ? 1 : 0;
   block.label = cc.newLabel();
   FuncSignature sig;
   sig.setRet(WasmTtoJitT(retType));
@@ -209,6 +213,17 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
     block.locals.push_back(createReg(params[i]));
     funcNode->setArg(i, block.locals.back());
   }
+}
+
+void WasmCompiler::Return() {
+  if (returnType != WasmValueType::NONE) {
+    auto& block = blockMngr.getActive();
+    auto reg = block.stack.pop();
+    cc.ret(reg);
+  } else {
+    cc.ret();
+  }
+
 }
 
 void WasmCompiler::EndFunction() {
@@ -240,6 +255,11 @@ void WasmCompiler::Call(u32 index, WasmValueType retType,
   for (u32 i = 0; i < params.size(); i++) {
     invokeNode->setArg(i, block.stack.pop());
   }
+
+  if (retType == WasmValueType::NONE) {
+    return;
+  }
+
   x86::Gp retReg = createReg(retType);
 
   invokeNode->setRet(0, retReg);
@@ -251,6 +271,21 @@ void WasmCompiler::AddLocals(std::span<WasmValueType> localTypes) {
   for (auto type : localTypes) {
     locals.push_back(createReg(type));
   }
+}
+
+void WasmCompiler::AddGlobals(std::span<WasmGlobal> _globals,
+                              std::span<value_t> values) {
+  for (u32 i = 0; i < _globals.size(); i++) {
+    auto &global = _globals[i];
+    auto &value = values[i];
+    if (!global.isMutable) {
+      globals.push_back(cc.newInt32Const(globalPool, std::get<i32>(value)));
+    } else {
+      globals.push_back(cc.newInt32Const(globalPool, std::get<i32>(value)));
+    }
+
+  }
+
 }
 
 
@@ -284,14 +319,14 @@ void WasmCompiler::EndBlock() {
  * the stack state (top x elements depending on outArity) after generating the branch
  * has to be transferred to the block at depth + 1
  */
-void WasmCompiler::BrIfz(i32 depth) {
+void WasmCompiler::BrIf(i32 depth) {
 
   Label noBreak = cc.newLabel();
   auto& currentBlock = blockMngr.getActive();
   auto reg = currentBlock.stack.pop();
   cc.test(reg, reg);
 
-  cc.jnz(noBreak);
+  cc.jz(noBreak);
 
 
  // currentBlock.stack.deduplicate(cc);
@@ -305,12 +340,7 @@ void WasmCompiler::BrIfz(i32 depth) {
 
 void WasmCompiler::BrIfnz(i32 depth) {
   assert (false && "Not implemented");
-  auto& block = blockMngr.getActive();
-  auto reg = block.stack.pop();
-  cc.test(reg, reg);
 
-  BlockState &parent = blockMngr.getRelative(depth - 1);
-  cc.jnz(block.label);
 }
 
 void WasmCompiler::Br(i32 depth) {
@@ -342,9 +372,32 @@ void WasmCompiler::Add() {
   block.stack.push(dst);
 }
 
+void WasmCompiler::I32Load(i64 base) {
+  auto& block = blockMngr.getActive();
+  auto reg = createReg(WasmValueType::I32);
+  auto offset = block.stack.pop();
+  auto ptr = x86::ptr_32(base, offset);
+  cc.mov(reg, ptr);
+  block.stack.push(reg);
+}
+
+void WasmCompiler::I32Store(i64 addr) {
+  auto& block = blockMngr.getActive();
+  auto value = block.stack.pop();
+  auto offset = block.stack.pop();
+  auto ptr = x86::ptr_32(addr, offset);
+  cc.mov(ptr, value);
+}
+
 void WasmCompiler::LocalGet(u32 index) {
   auto &block = blockMngr.getActive();
   block.stack.push(block.locals[index]);
+}
+void WasmCompiler::GlobalGet(u32 index) {
+  auto &block = blockMngr.getActive();
+  auto reg = createReg(WasmValueType::I32);
+  cc.mov(reg, globals[index]);
+  block.stack.push(reg);
 }
 
 void WasmCompiler::LocalSet(u32 index) {

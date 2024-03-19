@@ -1,7 +1,10 @@
 #pragma once
 
 #include "asmjit/asmjit.h"
+#include "asmjit/core/constpool.h"
+#include "asmjit/x86/x86opcode_p.h"
 #include "asmjit/x86/x86operand.h"
+#include "lib/tz-utils.hpp"
 #include "parser.hpp"
 #include <span>
 #include <vector>
@@ -68,16 +71,22 @@ public:
                      std::span<WasmValueType> params);
   void EndFunction();
   void AddLocals(std::span<WasmValueType> types);
+  void AddGlobals(std::span<WasmGlobal> globals, std::span<value_t> values);
   void EndBlock();
+  void Return();
 
   void LocalGet(u32 index);
+  void GlobalGet(u32 index);
   void LocalSet(u32 index);
   void I32Const(i32 value);
   void Call(u32 fnIdx, WasmValueType retType, std::span<WasmValueType> params);
 
   void StartBlock(u32 in, u32 out);
 
-  void BrIfz(i32 depth);
+  void I32Load(i64 addr);
+  void I32Store(i64 addr);
+
+  void BrIf(i32 depth);
   void BrIfnz(i32 depth);
   void Br(i32 depth);
 
@@ -93,6 +102,11 @@ private:
   void _I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs);
   x86::Gp createReg(WasmValueType type);
   WasmValueType returnType;
+
+
+  std::vector<x86::Mem> globals;
+
+  ConstPoolScope globalPool;
 
   JitRuntime runtime;
   CodeHolder code;

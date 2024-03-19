@@ -17,6 +17,7 @@
 
 using namespace wasmjit;
 
+using voidvoidFn = void (*)();
 using IntVoidFn = int (*)();
 using IntIntFn = int (*)(int);
 using IntIntIntFn = int (*)(int, int);
@@ -97,6 +98,18 @@ TEST_CASE("basic add") {
   auto fn = cc.getEntry<IntIntIntFn>(0);
   REQUIRE_EQ(fn(1, 2), 3);
 }
+
+TEST_CASE("empty fn") {
+  WasmCompiler cc(1);
+  std::vector<WasmValueType> params = {};
+  cc.StartFunction(0, WasmValueType::NONE, params);
+  cc.EndFunction();
+  cc.finalize();
+  cc.dump();
+  auto fn = cc.getEntry<voidvoidFn>(0);
+  REQUIRE_NOTHROW(fn());
+}
+
 
 TEST_CASE("add and add const") {
   WasmCompiler cc(1);
@@ -247,15 +260,15 @@ TEST_CASE("block br_if") {
   cc.StartBlock({}, 1);
   cc.LocalGet(0);
   cc.LocalGet(0);
-  cc.BrIfz(0);
+  cc.BrIf(0);
   cc.I32Const(100);
   cc.Add();
   cc.EndBlock();
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntIntFn>(0);
-  REQUIRE_EQ(fn(0), 0);
-  REQUIRE_EQ(fn(42), 142);
+  REQUIRE_EQ(fn(42), 42);
+  REQUIRE_EQ(fn(0), 100);
 }
 
 TEST_CASE("block br_if end of function") {
@@ -265,7 +278,7 @@ TEST_CASE("block br_if end of function") {
   cc.StartBlock({}, 1);
   cc.LocalGet(0);
   cc.LocalGet(0);
-  cc.BrIfz(1);
+  cc.BrIf(1);
   cc.I32Const(100);
   cc.Add();
   cc.EndBlock();
@@ -274,8 +287,8 @@ TEST_CASE("block br_if end of function") {
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntIntFn>(0);
-  REQUIRE_EQ(fn(0), 0);
-  REQUIRE_EQ(fn(42), 1142);
+  REQUIRE_EQ(fn(42), 42);
+  REQUIRE_EQ(fn(0), 1100);
 }
 
 // TEST_CASE("nested block") {
