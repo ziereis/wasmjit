@@ -7,11 +7,18 @@
 #include "lib/tz-utils.hpp"
 #include "parser.hpp"
 #include <span>
+#include <sstream>
 #include <vector>
 
 using namespace asmjit;
 
 namespace wasmjit {
+
+static inline std::stringstream dbg;
+
+#define LOG_DEBUG_CC(fmt, ...)                                                    \
+  dbg << "CC ->"; \
+  dbg << std::format(fmt, __VA_ARGS__) << std::endl
 
 class OperandStack {
 public:
@@ -97,9 +104,11 @@ public:
 
   void finalize();
   template <typename T> T getEntry(u32 fnIdx);
-  void dump();
+  void dumpAsm();
+  void dumpTrace();
 
 private:
+
   void _I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs);
   x86::Gp createReg(WasmValueType type);
   WasmValueType returnType;

@@ -18,15 +18,12 @@
 #include <iterator>
 #include <vector>
 
-
 using namespace wasmjit;
 
 using voidvoidFn = void (*)();
 using IntVoidFn = int (*)();
 using IntIntFn = int (*)(int);
 using IntIntIntFn = int (*)(int, int);
-
-
 
 TEST_CASE("asmjit") {
   JitRuntime rt;
@@ -43,27 +40,27 @@ TEST_CASE("asmjit") {
   sig.addArg(TypeId::kInt32);
   sig.addArg(TypeId::kInt32);
   auto fn = c.addFunc(sig);
-    x86::Gp left = c.newInt32("left");
-    x86::Gp right = c.newInt32("right");
+  x86::Gp left = c.newInt32("left");
+  x86::Gp right = c.newInt32("right");
 
-    fn->setArg(0, left);
-    fn->setArg(1, right);
-    c.cmp(left, right);
+  fn->setArg(0, left);
+  fn->setArg(1, right);
+  c.cmp(left, right);
 
-    x86::Gp result = c.newInt32("result");
+  x86::Gp result = c.newInt32("result");
 
-    c.setg(x86::cl);
-    c.movzx(result, x86::cl);
+  c.setg(x86::cl);
+  c.movzx(result, x86::cl);
 
-    c.ret(result);
+  c.ret(result);
 
-    c.endFunc();
+  c.endFunc();
 
-    c.finalize();
+  c.finalize();
 
-    IntIntIntFn fnPtr;
+  IntIntIntFn fnPtr;
 
-    rt.add(&fnPtr, &code);
+  rt.add(&fnPtr, &code);
 
   std::cout << logger.data() << std::endl;
 }
@@ -109,11 +106,10 @@ TEST_CASE("empty fn") {
   cc.StartFunction(0, WasmValueType::NONE, params);
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
+  cc.dumpAsm();
   auto fn = cc.getEntry<voidvoidFn>(0);
   REQUIRE_NOTHROW(fn());
 }
-
 
 TEST_CASE("add and add const") {
   WasmCompiler cc(1);
@@ -162,7 +158,6 @@ TEST_CASE("function call, callee generated first") {
   REQUIRE_EQ(fn(), 42);
 }
 
-
 TEST_CASE("function call, caller generated first") {
   WasmCompiler cc(2);
   std::vector<WasmValueType> params = {WasmValueType::I32};
@@ -181,6 +176,23 @@ TEST_CASE("function call, caller generated first") {
   cc.finalize();
   auto fn = cc.getEntry<IntVoidFn>(1);
   REQUIRE_EQ(fn(), 42);
+}
+
+int add(int a, int b) { return a + b; }
+
+TEST_CASE("call external") {
+  WasmCompiler cc(1);
+  std::vector<WasmValueType> params = {WasmValueType::I32, WasmValueType::I32};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.LocalGet(0);
+  cc.LocalGet(1);
+  cc.Call(reinterpret_cast<uintptr_t>(&add), WasmValueType::I32, params);
+  cc.EndFunction();
+  cc.finalize();
+  cc.dumpAsm();
+  cc.dumpTrace();
+  auto fn = cc.getEntry<IntIntIntFn>(0);
+  REQUIRE_EQ(fn(1, 2), 3);
 }
 
 TEST_CASE("greater than") {
@@ -208,7 +220,7 @@ TEST_CASE("load") {
   cc.I32Load(reinterpret_cast<uintptr_t>(mem));
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
+  cc.dumpAsm();
   auto fn = cc.getEntry<IntVoidFn>(0);
   auto res = fn();
   REQUIRE_EQ(res, 1337);
@@ -221,11 +233,11 @@ TEST_CASE("load at offset") {
   mem[3] = 1337;
   std::vector<WasmValueType> params = {};
   cc.StartFunction(0, WasmValueType::I32, params);
-  cc.I32Const(3 * sizeof(u32) ); // offset
+  cc.I32Const(3 * sizeof(u32)); // offset
   cc.I32Load(reinterpret_cast<uintptr_t>(mem));
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
+  cc.dumpAsm();
   auto fn = cc.getEntry<IntVoidFn>(0);
   auto res = fn();
   REQUIRE_EQ(res, 1337);
@@ -234,19 +246,34 @@ TEST_CASE("load at offset") {
 TEST_CASE("store") {
   WasmCompiler cc(1);
   u32 *mem = static_cast<u32 *>(malloc(sizeof(u32)));
-  std::cout << "My mem addr: " << reinterpret_cast<u64>(mem) << std::endl;
-  std::cout << "With content: " << *mem << std::endl;
-  std::vector<WasmValueType> params = {WasmValueType::I32};
+  std::vector<WasmValueType> params = {};
   cc.StartFunction(0, WasmValueType::NONE, params);
-  cc.LocalGet(0);
+  cc.I32Const(0);
+  cc.I32Const(1337);
   cc.I32Store(reinterpret_cast<uintptr_t>(mem));
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
+  cc.dumpAsm();
   auto fn = cc.getEntry<voidvoidFn>(0);
   fn();
-  REQUIRE_EQ(*mem, 0);
+  REQUIRE_EQ(*mem, 1337);
+}
 
+TEST_CASE("store at offset") {
+  WasmCompiler cc(1);
+  u32 *mem = static_cast<u32 *>(malloc(sizeof(u32) * 4));
+  memset(mem, 0, sizeof(u32) * 4);
+  std::vector<WasmValueType> params = {};
+  cc.StartFunction(0, WasmValueType::NONE, params);
+  cc.I32Const(3 * sizeof(u32));
+  cc.I32Const(1337);
+  cc.I32Store(reinterpret_cast<uintptr_t>(mem));
+  cc.EndFunction();
+  cc.finalize();
+  cc.dumpAsm();
+  auto fn = cc.getEntry<voidvoidFn>(0);
+  fn();
+  REQUIRE_EQ(mem[3], 1337);
 }
 
 TEST_CASE("block") {
@@ -276,6 +303,26 @@ TEST_CASE("block with input") {
   auto fn = cc.getEntry<IntIntFn>(0);
   REQUIRE_EQ(fn(42), 84);
 }
+
+TEST_CASE("global get non mutable") {
+  WasmCompiler cc(1);
+  WasmGlobal global;
+  global.type = WasmValueType::I32;
+  global.isMutable = false;
+  std::vector<WasmGlobal> globals = {global};
+  std::vector<value_t> values = {42};
+  cc.AddGlobals(globals, values);
+
+  std::vector<WasmValueType> params = {};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.GlobalGet(0);
+  cc.EndFunction();
+  cc.finalize();
+  cc.dumpAsm();
+  auto fn = cc.getEntry<IntVoidFn>(0);
+  REQUIRE_EQ(fn(), 42);
+}
+
 
 TEST_CASE("block br_if") {
   WasmCompiler cc(1);

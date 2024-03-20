@@ -141,6 +141,8 @@ void BlockManager::clear() {
 
 
 WasmCompiler::WasmCompiler(u32 funcCount) {
+  std::stringstream temp;
+  dbg.swap(temp);
   code.init(runtime.environment(), runtime.cpuFeatures());
   code.setLogger(&logger);
   code.attach(&cc);
@@ -168,6 +170,7 @@ x86::Gp WasmCompiler::createReg(WasmValueType type) {
 
 void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
                                  std::span<WasmValueType> params) {
+  LOG_DEBUG_CC("StartFunction Index: {}, retType: {}, params: {}", index, toString(retType), params.size());
   // this is for return
   {
     returnType = retType;
@@ -200,6 +203,7 @@ void WasmCompiler::StartFunction(u32 index, WasmValueType retType,
 }
 
 void WasmCompiler::Return() {
+  LOG_DEBUG_CC("Return, type: {}", toString(returnType));
   if (returnType != WasmValueType::NONE) {
     auto& block = blockMngr.getActive();
     auto reg = block.stack.pop();
@@ -211,6 +215,7 @@ void WasmCompiler::Return() {
 }
 
 void WasmCompiler::EndFunction() {
+  LOG_DEBUG_CC("EndFunction, nest: {}", blockMngr.size());
   EndBlock();
   assert(blockMngr.size() == 1 && "BlockManager not empty at end of function");
   if (returnType != WasmValueType::NONE) {
@@ -227,6 +232,7 @@ void WasmCompiler::EndFunction() {
 
 
 void WasmCompiler::AddLocals(std::span<WasmValueType> localTypes) {
+  LOG_DEBUG("AddLocals: {}", localTypes.size());
   auto &locals = blockMngr.getActive().locals;
   for (auto type : localTypes) {
     locals.push_back(createReg(type));
@@ -235,6 +241,7 @@ void WasmCompiler::AddLocals(std::span<WasmValueType> localTypes) {
 
 void WasmCompiler::AddGlobals(std::span<WasmGlobal> _globals,
                               std::span<value_t> values) {
+  LOG_DEBUG_CC("AddGlobals: {}", _globals.size());
   for (u32 i = 0; i < _globals.size(); i++) {
     auto &global = _globals[i];
     auto &value = values[i];
@@ -250,6 +257,7 @@ void WasmCompiler::AddGlobals(std::span<WasmGlobal> _globals,
 
 
 void WasmCompiler::StartBlock(u32 in, u32 out) {
+  LOG_DEBUG_CC("StartBlock: in: {}, out: {}", in, out);
   blockMngr.pushBlock();
   auto &block = blockMngr.getActive();
   auto &parent = blockMngr.getParent();
@@ -262,6 +270,7 @@ void WasmCompiler::StartBlock(u32 in, u32 out) {
 }
 
 void WasmCompiler::EndBlock() {
+  LOG_DEBUG_CC("EndBlock", 0);
   BlockState &block = blockMngr.getActive();
   assert(blockMngr.size() >= 1 && "EndBlock called on empty block stack");
   BlockState &parent = blockMngr.getParent();
@@ -280,7 +289,7 @@ void WasmCompiler::EndBlock() {
  * has to be transferred to the block at depth + 1
  */
 void WasmCompiler::BrIf(i32 depth) {
-
+  LOG_DEBUG_CC("BrIf: {}", depth);
   Label noBreak = cc.newLabel();
   auto& currentBlock = blockMngr.getActive();
   auto reg = currentBlock.stack.pop();
@@ -299,16 +308,19 @@ void WasmCompiler::BrIf(i32 depth) {
 }
 
 void WasmCompiler::BrIfnz(i32 depth) {
+
   assert (false && "Not implemented");
 
 }
 
 void WasmCompiler::Br(i32 depth) {
+  LOG_DEBUG_CC("Br: {}", depth);
   BlockState &block = blockMngr.getRelative(depth - 1);
   cc.jmp(block.label);
 }
 
 void WasmCompiler::I32Const(i32 value) {
+  LOG_DEBUG_CC("I32Const: {}", value);
   auto& block = blockMngr.getActive();
   auto reg = createReg(WasmValueType::I32);
   cc.mov(reg, value);
@@ -324,6 +336,7 @@ void WasmCompiler::_I32Add(x86::Gp dst, x86::Gp lhs, x86::Gp rhs) {
 }
 
 void WasmCompiler::Add() {
+  LOG_DEBUG_CC("Add", 0);
   auto& block = blockMngr.getActive();
   x86::Gp dst = createReg(WasmValueType::I32);
   x86::Gp rhs = block.stack.pop();
@@ -333,6 +346,7 @@ void WasmCompiler::Add() {
 }
 
 void WasmCompiler::I32Load(i64 base) {
+  LOG_DEBUG_CC("I32Load: {}", base);
   auto& block = blockMngr.getActive();
   auto result = createReg(WasmValueType::I32);
   auto offset = block.stack.pop();
@@ -343,6 +357,7 @@ void WasmCompiler::I32Load(i64 base) {
 }
 
 void WasmCompiler::I32Store(i64 base) {
+  LOG_DEBUG_CC("I32Store: {}", base);
   auto& block = blockMngr.getActive();
   auto value = block.stack.pop();
   auto offset = block.stack.pop();
@@ -352,10 +367,12 @@ void WasmCompiler::I32Store(i64 base) {
 }
 
 void WasmCompiler::LocalGet(u32 index) {
+  LOG_DEBUG_CC("LocalGet: {}", index);
   auto &block = blockMngr.getActive();
   block.stack.push(block.locals[index]);
 }
 void WasmCompiler::GlobalGet(u32 index) {
+  LOG_DEBUG_CC("GlobalGet: {}", index);
   auto &block = blockMngr.getActive();
   auto reg = createReg(WasmValueType::I32);
   cc.mov(reg, globals[index]);
@@ -363,12 +380,14 @@ void WasmCompiler::GlobalGet(u32 index) {
 }
 
 void WasmCompiler::LocalSet(u32 index) {
+  LOG_DEBUG_CC("LocalSet: {}", index);
   auto &block = blockMngr.getActive();
   auto reg = block.stack.pop();
   cc.mov(block.locals[index], reg);
 }
 
 void WasmCompiler::Gts() {
+  LOG_DEBUG_CC("Gts", 0);
   auto& block = blockMngr.getActive();
   x86::Gp rhs = block.stack.pop();
   x86::Gp lhs = block.stack.pop();
@@ -380,6 +399,7 @@ void WasmCompiler::Gts() {
 }
 
 void WasmCompiler::finalize() {
+  LOG_DEBUG_CC("finalize", 0);
   cc.finalize();
   Error err = runtime.add(&entry, &code);
   if (err) {
@@ -387,6 +407,9 @@ void WasmCompiler::finalize() {
   }
 }
 
-void WasmCompiler::dump() { std::cout << logger.data() << std::endl; }
+void WasmCompiler::dumpAsm() { std::cout << logger.data() << std::endl; }
+void WasmCompiler::dumpTrace() {
+  std::cout << dbg.str() << std::endl;
+}
 
 } // namespace wasmjit

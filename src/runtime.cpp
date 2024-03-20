@@ -181,7 +181,11 @@ int runWasm(std::string_view fileName) {
     compiler.EndFunction();
   }
   compiler.finalize();
-  compiler.dump();
+  compiler.dumpAsm();
+  compiler.dumpTrace();
+  using voidvoidFn = void (*)();
+  auto fn = compiler.getEntry<voidvoidFn>(wasmModule.exportSection.startFunctionIndex.value());
+  fn();
   return 0;
 }
 
