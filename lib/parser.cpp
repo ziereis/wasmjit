@@ -204,6 +204,10 @@ void ExportSection::parseSection(ArenaAllocator &alloc, BinaryReader &reader) {
           reinterpret_cast<const char *>(strMem.data()), strMem.size());
     entity.type = static_cast<ExportType>(reader.read<u8>());
     entity.entityIndex = reader.readIntLeb<u32>();
+    if (entity.name == "_start") {
+      assert(entity.type == ExportType::FUNCTION);
+      startFunctionIndex = entity.entityIndex;
+    }
   }
 }
 

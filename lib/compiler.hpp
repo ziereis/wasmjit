@@ -79,7 +79,8 @@ public:
   void GlobalGet(u32 index);
   void LocalSet(u32 index);
   void I32Const(i32 value);
-  void Call(u32 fnIdx, WasmValueType retType, std::span<WasmValueType> params);
+  template<class T>
+  void Call(T target, WasmValueType retType, std::span<WasmValueType> params);
 
   void StartBlock(u32 in, u32 out);
 
@@ -123,5 +124,61 @@ template <class T> T WasmCompiler::getEntry(u32 fnIdx) {
   auto offset = code.labelOffsetFromBase(fnLabels[fnIdx]);
   return reinterpret_cast<T>(entry + offset);
 }
+
+static TypeId WasmTtoJitT(WasmValueType type) {
+  switch (type) {
+  case WasmValueType::I32:
+    return TypeId::kInt32;
+  case WasmValueType::I64:
+    return TypeId::kInt64;
+  case WasmValueType::F32:
+    return TypeId::kInt32;
+  case WasmValueType::F64:
+    return TypeId::kInt64;
+  case WasmValueType::NONE:
+    return TypeId::kVoid;
+  default:
+    throw std::runtime_error("Invalid type");
+  }
+}
+
+template<class T>
+void WasmCompiler::Call(T target, WasmValueType retType,
+                        std::span<WasmValueType> params) {
+  // TODO: maybe cache the sig if its already generated
+  FuncSignature calleeSig;
+  calleeSig.setRet(WasmTtoJitT(retType));
+  for (auto param : params) {
+    calleeSig.addArg(WasmTtoJitT(param));
+  }
+  InvokeNode *invokeNode;
+  if constexpr (std::is_same_v<u32, T>) {
+    Error err = cc.invoke(&invokeNode, fnLabels[target], calleeSig);
+    if (err) {
+      throw std::runtime_error("Failed to generate invoke node");
+    }
+  } else {
+    static_assert(std::is_same_v<uintptr_t, T>);
+    Error err = cc.invoke(&invokeNode, imm(target), calleeSig);
+    if (err) {
+      throw std::runtime_error("Failed to generate invoke node");
+    }
+  }
+
+  auto& block = blockMngr.getActive();
+  for (u32 i = 0; i < params.size(); i++) {
+    invokeNode->setArg(i, block.stack.pop());
+  }
+
+  if (retType == WasmValueType::NONE) {
+    return;
+  }
+
+  x86::Gp retReg = createReg(retType);
+
+  invokeNode->setRet(0, retReg);
+  block.stack.push(retReg);
+}
+
 
 } // namespace wasmjit

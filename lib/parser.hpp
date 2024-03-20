@@ -207,6 +207,7 @@ struct ExportSection : NonCopyable, NonMoveable {
   void dump() const;
 
   std::span<ExportEntity> exports;
+  std::optional<u32> startFunctionIndex;
 };
 
 

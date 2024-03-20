@@ -107,17 +107,15 @@ int runWasm(std::string_view fileName) {
       case WasmOpcode::I32_LOAD: {
         u32 align = reader.readIntLeb<u32>();
         i32 offset = reader.readIntLeb<i32>();
-        assert(offset == 0);
         std::ignore = align;
-        compiler.I32Load(reinterpret_cast<u64>(memory.mem));
+        compiler.I32Load(reinterpret_cast<u64>(memory.mem + offset));
         break;
       }
       case WasmOpcode::I32_STORE: {
         u32 align = reader.readIntLeb<u32>();
         i32 offset = reader.readIntLeb<i32>();
-        assert(offset == 0);
         std::ignore = align;
-        compiler.I32Store(reinterpret_cast<u64>(memory.mem));
+        compiler.I32Store(reinterpret_cast<u64>(memory.mem + offset));
         break;
       }
       case WasmOpcode::LOCAL_SET: {
@@ -133,7 +131,11 @@ int runWasm(std::string_view fileName) {
       case WasmOpcode::CALL: {
         u32 fnIdx = reader.readIntLeb<u32>();
         auto &signature = wasmModule.getPrototype(fnIdx);
-        compiler.Call(fnIdx, signature.returnType, signature.paramTypes);
+        if (fnIdx < wasmModule.importSection.numImportedFuncs) {
+          compiler.Call(wasmModule.functionSection.importedFnPtrs[fnIdx], signature.returnType, signature.paramTypes);
+        } else {
+          compiler.Call(u32{fnIdx}, signature.returnType, signature.paramTypes);
+        }
         break;
       }
       case WasmOpcode::I32_ADD: {
@@ -178,6 +180,7 @@ int runWasm(std::string_view fileName) {
   end:
     compiler.EndFunction();
   }
+  compiler.finalize();
   compiler.dump();
   return 0;
 }

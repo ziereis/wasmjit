@@ -139,22 +139,6 @@ void BlockManager::clear() {
   activeBlock = -1;
 }
 
-static TypeId WasmTtoJitT(WasmValueType type) {
-  switch (type) {
-  case WasmValueType::I32:
-    return TypeId::kInt32;
-  case WasmValueType::I64:
-    return TypeId::kInt64;
-  case WasmValueType::F32:
-    return TypeId::kInt32;
-  case WasmValueType::F64:
-    return TypeId::kInt64;
-  case WasmValueType::NONE:
-    return TypeId::kVoid;
-  default:
-    throw std::runtime_error("Invalid type");
-  }
-}
 
 WasmCompiler::WasmCompiler(u32 funcCount) {
   code.init(runtime.environment(), runtime.cpuFeatures());
@@ -240,31 +224,7 @@ void WasmCompiler::EndFunction() {
   blockMngr.clear();
 }
 
-void WasmCompiler::Call(u32 index, WasmValueType retType,
-                        std::span<WasmValueType> params) {
-  // TODO: maybe cache the sig if its already generated
-  FuncSignature calleeSig;
-  calleeSig.setRet(WasmTtoJitT(retType));
-  for (auto param : params) {
-    calleeSig.addArg(WasmTtoJitT(param));
-  }
-  InvokeNode *invokeNode;
-  cc.invoke(&invokeNode, fnLabels[index], calleeSig);
 
-  auto& block = blockMngr.getActive();
-  for (u32 i = 0; i < params.size(); i++) {
-    invokeNode->setArg(i, block.stack.pop());
-  }
-
-  if (retType == WasmValueType::NONE) {
-    return;
-  }
-
-  x86::Gp retReg = createReg(retType);
-
-  invokeNode->setRet(0, retReg);
-  block.stack.push(retReg);
-}
 
 void WasmCompiler::AddLocals(std::span<WasmValueType> localTypes) {
   auto &locals = blockMngr.getActive().locals;
@@ -374,19 +334,21 @@ void WasmCompiler::Add() {
 
 void WasmCompiler::I32Load(i64 base) {
   auto& block = blockMngr.getActive();
-  auto reg = createReg(WasmValueType::I32);
+  auto result = createReg(WasmValueType::I32);
   auto offset = block.stack.pop();
-  auto ptr = x86::ptr_32(base, offset);
-  cc.mov(reg, ptr);
-  block.stack.push(reg);
+  auto baseReg = createReg(WasmValueType::I64);
+  cc.mov(baseReg, base);
+  cc.mov(result, x86::ptr_32(baseReg, offset));
+  block.stack.push(result);
 }
 
-void WasmCompiler::I32Store(i64 addr) {
+void WasmCompiler::I32Store(i64 base) {
   auto& block = blockMngr.getActive();
   auto value = block.stack.pop();
   auto offset = block.stack.pop();
-  auto ptr = x86::ptr_32(addr, offset);
-  cc.mov(ptr, value);
+  auto baseReg = createReg(WasmValueType::I64);
+  cc.mov(baseReg, base);
+  cc.mov(x86::ptr_32(baseReg, offset), value);
 }
 
 void WasmCompiler::LocalGet(u32 index) {

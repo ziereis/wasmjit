@@ -10,8 +10,12 @@
 #include "doctest.h"
 #include "lib/compiler.hpp"
 #include "lib/parser.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <vector>
 
 
@@ -151,7 +155,7 @@ TEST_CASE("function call, callee generated first") {
   // call increment one
   cc.StartFunction(1, WasmValueType::I32, {});
   cc.I32Const(41);
-  cc.Call(0, WasmValueType::I32, params);
+  cc.Call(u32{0}, WasmValueType::I32, params);
   cc.EndFunction();
   cc.finalize();
   auto fn = cc.getEntry<IntVoidFn>(1);
@@ -166,7 +170,7 @@ TEST_CASE("function call, caller generated first") {
   // call increment one
   cc.StartFunction(1, WasmValueType::I32, {});
   cc.I32Const(41);
-  cc.Call(0, WasmValueType::I32, params);
+  cc.Call(u32{0}, WasmValueType::I32, params);
   cc.EndFunction();
   // increment one
   cc.StartFunction(0, WasmValueType::I32, params);
@@ -188,11 +192,60 @@ TEST_CASE("greater than") {
   cc.Gts();
   cc.EndFunction();
   cc.finalize();
-  cc.dump();
   auto fn = cc.getEntry<IntIntIntFn>(0);
   std::cout << fn(1, 2) << std::endl;
   REQUIRE_EQ(fn(1, 2), 0);
   REQUIRE_EQ(fn(2, 1), 1);
+}
+
+TEST_CASE("load") {
+  WasmCompiler cc(1);
+  u32 *mem = static_cast<u32 *>(malloc(sizeof(u32)));
+  *mem = 1337;
+  std::vector<WasmValueType> params = {};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.I32Const(0); // offset
+  cc.I32Load(reinterpret_cast<uintptr_t>(mem));
+  cc.EndFunction();
+  cc.finalize();
+  cc.dump();
+  auto fn = cc.getEntry<IntVoidFn>(0);
+  auto res = fn();
+  REQUIRE_EQ(res, 1337);
+}
+
+TEST_CASE("load at offset") {
+  WasmCompiler cc(1);
+  u32 *mem = static_cast<u32 *>(malloc(sizeof(u32) * 4));
+  memset(mem, 0, sizeof(u32) * 4);
+  mem[3] = 1337;
+  std::vector<WasmValueType> params = {};
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.I32Const(3 * sizeof(u32) ); // offset
+  cc.I32Load(reinterpret_cast<uintptr_t>(mem));
+  cc.EndFunction();
+  cc.finalize();
+  cc.dump();
+  auto fn = cc.getEntry<IntVoidFn>(0);
+  auto res = fn();
+  REQUIRE_EQ(res, 1337);
+}
+
+TEST_CASE("store") {
+  WasmCompiler cc(1);
+  u32 *mem = static_cast<u32 *>(malloc(sizeof(u32)));
+  std::cout << "My mem addr: " << reinterpret_cast<u64>(mem) << std::endl;
+  std::cout << "With content: " << *mem << std::endl;
+  std::vector<WasmValueType> params = {WasmValueType::I32};
+  cc.StartFunction(0, WasmValueType::NONE, params);
+  cc.LocalGet(0);
+  cc.I32Store(reinterpret_cast<uintptr_t>(mem));
+  cc.EndFunction();
+  cc.finalize();
+  cc.dump();
+  auto fn = cc.getEntry<voidvoidFn>(0);
+  fn();
+  REQUIRE_EQ(*mem, 0);
 
 }
 
