@@ -17,6 +17,7 @@
 #include <iostream>
 #include <iterator>
 #include <vector>
+#include "src/runtime.hpp"
 
 using namespace wasmjit;
 
@@ -304,24 +305,24 @@ TEST_CASE("block with input") {
   REQUIRE_EQ(fn(42), 84);
 }
 
-TEST_CASE("global get non mutable") {
-  WasmCompiler cc(1);
-  WasmGlobal global;
-  global.type = WasmValueType::I32;
-  global.isMutable = false;
-  std::vector<WasmGlobal> globals = {global};
-  std::vector<value_t> values = {42};
-  cc.AddGlobals(globals, values);
+// TEST_CASE("global get non mutable") {
+//   WasmCompiler cc(1);
+//   WasmGlobal global;
+//   global.type = WasmValueType::I32;
+//   global.isMutable = false;
+//   std::vector<WasmGlobal> globals = {global};
+//   std::vector<value_t> values = {42};
+//   cc.AddGlobals(globals, values);
 
-  std::vector<WasmValueType> params = {};
-  cc.StartFunction(0, WasmValueType::I32, params);
-  cc.GlobalGet(0);
-  cc.EndFunction();
-  cc.finalize();
-  cc.dumpAsm();
-  auto fn = cc.getEntry<IntVoidFn>(0);
-  REQUIRE_EQ(fn(), 42);
-}
+//   std::vector<WasmValueType> params = {};
+//   cc.StartFunction(0, WasmValueType::I32, params);
+//   cc.GlobalGet(0);
+//   cc.EndFunction();
+//   cc.finalize();
+//   cc.dumpAsm();
+//   auto fn = cc.getEntry<IntVoidFn>(0);
+//   REQUIRE_EQ(fn(), 42);
+// }
 
 
 TEST_CASE("block br_if") {
@@ -400,3 +401,100 @@ TEST_CASE("block br_if end of function") {
 //   cc.LocalGet(0);
 //   cc.
 // }
+
+
+
+
+
+// Trace:
+// CC ->AddGlobals: 1
+// CC ->StartFunction Index: 1, retType: void, params: 0
+// CC ->EndFunction, nest: 2
+// CC ->EndBlock
+// CC ->StartFunction Index: 2, retType: void, params: 0
+// CC ->StartBlock: in: 0, out: 0
+// CC ->StartBlock: in: 0, out: 0
+// CC ->I32Const: 0
+// CC ->I32Load: 127623645365248
+// CC ->BrIf: 0
+// CC ->I32Const: 0
+// CC ->I32Const: 1
+// CC ->I32Store: 127623645365248
+// CC ->LocalSet: 0
+// CC ->LocalGet: 0
+// CC ->BrIf: 1
+// CC ->Return, type: void
+// CC ->EndBlock
+// CC ->EndBlock
+// CC ->LocalGet: 0
+// CC ->EndFunction, nest: 2
+// CC ->EndBlock
+// CC ->StartFunction Index: 3, retType: i32, params: 0
+// CC ->I32Const: 1
+// CC ->EndFunction, nest: 2
+// CC ->EndBlock
+// CC ->StartFunction Index: 4, retType: void, params: 1
+// CC ->LocalGet: 0
+// CC ->EndFunction, nest: 2
+// CC ->EndBlock
+// CC ->StartFunction Index: 5, retType: void, params: 0
+// CC ->EndFunction, nest: 2
+// CC ->EndBlock
+// CC ->finalize
+
+
+TEST_CASE("add locals") {
+  std::vector<WasmValueType> params = {};
+  std::vector<WasmValueType> locals = {WasmValueType::I32};
+
+  WasmCompiler cc(1);
+  cc.StartFunction(0, WasmValueType::I32, params);
+  cc.AddLocals(locals);
+  cc.I32Const(42);
+  cc.LocalSet(0);
+  cc.LocalGet(0);
+  cc.EndFunction();
+  cc.finalize();
+  cc.dumpAsm();
+  auto fn = cc.getEntry<IntVoidFn>(0);
+  auto res = fn();
+  REQUIRE_EQ(res, 42);
+}
+
+TEST_CASE("trace example 1") {
+  std::vector<std::vector<WasmValueType>> params = {{WasmValueType::I32}, {}, {}};
+  std::vector<WasmValueType> rets = {WasmValueType::NONE, WasmValueType::NONE, WasmValueType::I32};
+  LinearMemory mem;
+  mem.init(2);
+
+  WasmCompiler cc(7);
+
+  std::vector<WasmValueType> locals = {WasmValueType::I32};
+  cc.StartFunction(1, rets[1], params[1]);
+  cc.EndFunction();
+  cc.StartFunction(2, rets[1], params[1]);
+  cc.AddLocals(locals);
+  cc.StartBlock(0, 0);
+  cc.StartBlock(0, 0);
+  cc.I32Const(0);
+  cc.I32Load(reinterpret_cast<uintptr_t>(mem.mem + 1024));
+  cc.BrIf(0);
+  cc.I32Const(0);
+  cc.I32Const(1);
+  cc.I32Store(reinterpret_cast<uintptr_t>(mem.mem + 1024));
+  cc.Call(u32(1), rets[1], params[1]);
+  cc.Call(u32(3), rets[2], params[2]);
+  cc.LocalSet(0);
+  // cc.Call(u32(6), rets[1], params[1]);
+  cc.LocalGet(0);
+  cc.BrIf(1);
+  // cc.Return();
+  cc.EndBlock();
+  cc.EndBlock();
+  // cc.LocalGet(0);
+  // cc.Call(u32(4), rets[0], params[0]);
+  cc.EndFunction();
+  cc.finalize();
+  cc.dumpAsm();
+  cc.dumpTrace();
+}

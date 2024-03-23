@@ -14,7 +14,6 @@ using namespace asmjit;
 
 namespace wasmjit {
 
-static inline std::stringstream dbg;
 
 #define LOG_DEBUG_CC(fmt, ...)                                                    \
   dbg << "CC ->"; \
@@ -117,6 +116,7 @@ private:
   std::vector<x86::Mem> globals;
 
   ConstPoolScope globalPool;
+  std::stringstream dbg;
 
   JitRuntime runtime;
   CodeHolder code;
@@ -126,7 +126,9 @@ private:
 
   std::vector<Label> fnLabels;
   BlockManager blockMngr;
+
 };
+
 
 template <class T> T WasmCompiler::getEntry(u32 fnIdx) {
   assert(fnLabels[fnIdx].isValid());
@@ -154,6 +156,7 @@ static TypeId WasmTtoJitT(WasmValueType type) {
 template<class T>
 void WasmCompiler::Call(T target, WasmValueType retType,
                         std::span<WasmValueType> params) {
+  LOG_DEBUG_CC("Call target: {}, retType: {}, parms: {}", target, toString(retType), params.size());
   // TODO: maybe cache the sig if its already generated
   FuncSignature calleeSig;
   calleeSig.setRet(WasmTtoJitT(retType));
